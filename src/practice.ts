@@ -101,3 +101,34 @@ export function saveState(state: PracticeState, storageKey = STORAGE_KEY): void 
 export function restartState(previous: PracticeState, questions: Question[]): PracticeState {
   return { ...initialState(questions), favorites: previous.favorites }
 }
+
+export function recordAnswer(
+  previous: PracticeState,
+  questionId: number,
+  answer: OptionKey,
+  correctAnswer: OptionKey,
+): PracticeState {
+  if (previous.answers[questionId]) return previous
+  return {
+    ...previous,
+    answers: { ...previous.answers, [questionId]: answer },
+    favorites: answer !== correctAnswer && !previous.favorites.includes(questionId)
+      ? [...previous.favorites, questionId]
+      : previous.favorites,
+  }
+}
+
+export function advanceIfCurrent(
+  previous: PracticeState,
+  expected: { mode: Mode; questionId: number },
+): PracticeState {
+  if (previous.mode !== expected.mode) return previous
+  const visibleIds = previous.mode === 'all'
+    ? previous.order
+    : previous.order.filter((id) => previous.favorites.includes(id))
+  const index = previous.mode === 'all' ? previous.allIndex : previous.favoriteIndex
+  if (visibleIds[index] !== expected.questionId || index >= visibleIds.length - 1) return previous
+  return previous.mode === 'all'
+    ? { ...previous, allIndex: index + 1 }
+    : { ...previous, favoriteIndex: index + 1 }
+}
