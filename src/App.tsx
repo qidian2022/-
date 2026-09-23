@@ -39,6 +39,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
     restart: <><path d="M3 11a9 9 0 1 1 2.3 7" /><path d="M3 4v7h7" /></>,
     check: <path d="m5 12 4.5 4.5L19 7" />,
     close: <><path d="M6 6 18 18" /><path d="M18 6 6 18" /></>,
+    star: <path d="m12 2.5 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.5Z" />,
     spark: <><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2Z" /><path d="m19 17 .6 1.4L21 19l-1.4.6L19 21l-.6-1.4L17 19l1.4-.6L19 17Z" /></>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
@@ -162,7 +163,7 @@ function App() {
         <div className="sidebar-bottom"><div className="side-card"><div className="side-card-icon"><Icon name="spark" size={18} /></div><strong>每天进步一点点</strong><p>答错的题会自动加入收藏，方便之后集中复习。</p></div><div className="side-foot">数据仅保存在当前浏览器</div></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div className="breadcrumb">{pageName}</div><div className="topbar-right"><span className="status-dot" />离线题库 · 即开即练</div></header>
+        <header className="topbar"><div className="breadcrumb">{pageName}</div><div className="topbar-right"><span className="topbar-status"><span className="status-dot" />离线题库 · 即开即练</span><a className="star-link" href="https://github.com/qidian2022/kemuyi-practice" target="_blank" rel="noopener noreferrer" title="前往 GitHub 给项目 Star"><Icon name="star" size={16} />给项目 Star</a></div></header>
         <div className="content-wrap">
           <section className="welcome"><div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div><h1>{page === 'favorites' ? '把值得回看的题，留在这里。' : page === 'full' ? '把每一道题，做得更明白。' : `${compactRefs.length} 道核心题，集中练起来。`}</h1><p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。' : page === 'full' ? '从原题库随机练习，答对后 0.4 秒自动进入下一题。' : '从全量原题中精选 300 道，保留原选项与配图。'}</p></section>
           <section className="stats" aria-label="练习数据">
