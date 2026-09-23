@@ -3,7 +3,9 @@ import rawQuestions from './generated/questions.json'
 import rawCompactQuestions from './generated/compact-questions.json'
 import {
   COMPACT_STORAGE_KEY,
+  advanceIfCurrent,
   loadState,
+  recordAnswer,
   restartState,
   saveState,
   type Mode,
@@ -45,6 +47,9 @@ function App() {
   const [fullState, setFullState] = useState(() => loadState(questions))
   const [compactState, setCompactState] = useState(() => loadState(compactQuestions, COMPACT_STORAGE_KEY))
   const [showReset, setShowReset] = useState(false)
+  const [pendingAdvance, setPendingAdvance] = useState<{
+    bank: Bank; mode: Mode; questionId: number
+  } | null>(null)
   const state = bank === 'full' ? fullState : compactState
   const bankQuestions = bank === 'full' ? questions : compactQuestions
   const favoriteSet = useMemo(() => new Set(state.favorites), [state.favorites])
@@ -71,8 +76,33 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('kemuyi-active-bank-v1', bank) } catch { /* Continue without storage. */ }
   }, [bank])
+  useEffect(() => {
+    if (!pendingAdvance) return
+    if (!question || pendingAdvance.bank !== bank || pendingAdvance.mode !== state.mode ||
+      pendingAdvance.questionId !== question.id || selected !== question.answer ||
+      currentIndex >= visibleIds.length - 1) {
+      setPendingAdvance(null)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const expected = { mode: pendingAdvance.mode, questionId: pendingAdvance.questionId }
+      if (pendingAdvance.bank === 'full') {
+        setFullState((previous) => advanceIfCurrent(previous, expected))
+      } else {
+        setCompactState((previous) => advanceIfCurrent(previous, expected))
+      }
+      setPendingAdvance(null)
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [pendingAdvance, bank, state.mode, question?.id, question?.answer, selected, currentIndex, visibleIds.length])
+
+  function switchBank(nextBank: Bank) {
+    setPendingAdvance(null)
+    setBank(nextBank)
+  }
 
   function changeMode(mode: Mode) {
+    setPendingAdvance(null)
     if (bank === 'full') setFullState((previous) => ({ ...previous, mode }))
     else setCompactState((previous) => ({ ...previous, mode }))
   }
@@ -89,15 +119,17 @@ function App() {
   }
 
   function answerQuestion(id: number, answer: OptionKey) {
-    const update = <T extends { answers: Record<number, OptionKey> }>(previous: T): T => previous.answers[id]
-      ? previous
-      : { ...previous, answers: { ...previous.answers, [id]: answer } }
-    if (bank === 'full') setFullState(update)
-    else setCompactState(update)
+    if (!question || question.id !== id || selected) return
+    if (bank === 'full') setFullState((previous) => recordAnswer(previous, id, answer, question.answer))
+    else setCompactState((previous) => recordAnswer(previous, id, answer, question.answer))
+    if (answer === question.answer && currentIndex < visibleIds.length - 1) {
+      setPendingAdvance({ bank, mode: state.mode, questionId: id })
+    }
   }
 
   function moveTo(index: number) {
     if (index < 0 || index >= visibleIds.length) return
+    setPendingAdvance(null)
     const update = <T extends { mode: Mode; allIndex: number; favoriteIndex: number }>(previous: T): T =>
       previous.mode === 'all'
         ? { ...previous, allIndex: index }
@@ -107,6 +139,7 @@ function App() {
   }
 
   function restart() {
+    setPendingAdvance(null)
     if (bank === 'full') setFullState((previous) => restartState(previous, questions))
     else setCompactState((previous) => restartState(previous, compactQuestions))
     setShowReset(false)
@@ -122,10 +155,10 @@ function App() {
 
         <div className="side-label">切换题库</div>
         <div className="bank-list" role="group" aria-label="选择题库">
-          <button className={`bank-item ${bank === 'full' ? 'active' : ''}`} onClick={() => setBank('full')} aria-pressed={bank === 'full'}>
+          <button className={`bank-item ${bank === 'full' ? 'active' : ''}`} onClick={() => switchBank('full')} aria-pressed={bank === 'full'}>
             <span className="bank-symbol">全</span><span className="bank-name">全量题库<small>1844 道 · 选择题</small></span>
           </button>
-          <button className={`bank-item ${bank === 'compact' ? 'active' : ''}`} onClick={() => setBank('compact')} aria-pressed={bank === 'compact'}>
+          <button className={`bank-item ${bank === 'compact' ? 'active' : ''}`} onClick={() => switchBank('compact')} aria-pressed={bank === 'compact'}>
             <span className="bank-symbol">精</span><span className="bank-name">C1/C2 精简<small>300 道 · 选择练习</small></span>
           </button>
         </div>
@@ -195,7 +228,7 @@ function App() {
                   })}</div>
                 {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status">
                   <div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div>
-                  <div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{bank === 'full' ? question.explanation || '暂无解析' : `原文件参考答案：${question.explanation}`}</p>{fullQuestion ? <a href={fullQuestion.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a> : <span className="generated-note">本题选项由题库答案自动组合；原文件没有逐题解析。</span>}</div>
+                  <div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{bank === 'full' ? question.explanation || '暂无解析' : `原文件参考答案：${question.explanation}`}</p>{fullQuestion ? <a href={fullQuestion.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a> : <span className="generated-note">本题选项由题库答案自动组合；原文件没有逐题解析。</span>}{selected === question.answer && pendingAdvance?.questionId === question.id && <span className="auto-result-note">即将进入下一题</span>}{selected !== question.answer && <span className="auto-result-note">已在我的收藏中</span>}</div>
                 </div>}
               </div>
               <div className="question-footer">
@@ -210,7 +243,7 @@ function App() {
 
           <div className="bottom-row">
             <div className="source-note">{bank === 'full' ? <>题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a> · 采集于 2026-09-23 · 内容未经官方核验</> : <>C1/C2 核心题原创归纳 · 选项自动组合 · 非官方考试原题</>}</div>
-            <button className="reset-link" onClick={() => setShowReset(true)}><Icon name="restart" size={16} /> 重新开始</button>
+            <button className="reset-link" onClick={() => { setPendingAdvance(null); setShowReset(true) }}><Icon name="restart" size={16} /> 重新开始</button>
           </div>
         </div>
       </main>

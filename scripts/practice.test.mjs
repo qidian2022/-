@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { COMPACT_STORAGE_KEY, initialState, loadState, restartState, saveState } from '../src/practice.ts'
+import { COMPACT_STORAGE_KEY, advanceIfCurrent, initialState, loadState, recordAnswer, restartState, saveState } from '../src/practice.ts'
 
 const questions = [
   { id: 1, options: [{ key: 'A' }, { key: 'B' }], answer: 'B' },
@@ -67,4 +67,27 @@ test('the two question banks keep separate answers and favorites', () => {
 
   assert.deepEqual(loadState(questions), full)
   assert.deepEqual(loadState(questions, COMPACT_STORAGE_KEY), compact)
+})
+
+test('automatic advance moves only from the same visible question and mode', () => {
+  const state = {
+    order: [1, 2], answers: { 1: 'B' }, favorites: [1, 2],
+    allIndex: 0, favoriteIndex: 0, mode: 'all',
+  }
+  assert.equal(advanceIfCurrent(state, { mode: 'all', questionId: 1 }).allIndex, 1)
+  assert.equal(advanceIfCurrent(state, { mode: 'all', questionId: 2 }), state)
+  assert.equal(advanceIfCurrent({ ...state, allIndex: 1 }, { mode: 'all', questionId: 1 }).allIndex, 1)
+  const favoritesState = { ...state, mode: 'favorites' }
+  assert.equal(advanceIfCurrent(favoritesState, { mode: 'all', questionId: 1 }), favoritesState)
+  assert.equal(advanceIfCurrent({ ...state, mode: 'favorites' }, { mode: 'favorites', questionId: 1 }).favoriteIndex, 1)
+})
+
+test('wrong answers are saved once to favorites while correct answers are not', () => {
+  const state = initialState(questions)
+  const wrong = recordAnswer(state, 1, 'A', 'B')
+  assert.deepEqual(wrong.favorites, [1])
+  assert.equal(wrong.answers[1], 'A')
+  assert.equal(recordAnswer(wrong, 1, 'A', 'B'), wrong)
+  const correct = recordAnswer(wrong, 2, 'A', 'A')
+  assert.deepEqual(correct.favorites, [1])
 })
