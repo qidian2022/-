@@ -95,7 +95,7 @@ function App() {
         setFavoriteIndex((previous) => previous === pendingAdvance.index ? previous + 1 : previous)
       }
       setPendingAdvance(null)
-    }, 400)
+    }, 1000)
     return () => window.clearTimeout(timer)
   }, [pendingAdvance, page, currentRef?.key, currentIndex, selected, question?.answer, visibleRefs.length])
 
@@ -165,7 +165,7 @@ function App() {
       <main className="main-content">
         <header className="topbar"><div className="breadcrumb">{pageName}</div><div className="topbar-right"><span className="topbar-status"><span className="status-dot" />离线题库 · 即开即练</span><a className="star-link" href="https://github.com/qidian2022/kemuyi-practice" target="_blank" rel="noopener noreferrer" title="前往 GitHub 给项目 Star"><Icon name="star" size={16} />给项目 Star</a></div></header>
         <div className="content-wrap">
-          <section className="welcome"><div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div><h1>{page === 'favorites' ? '把值得回看的题，留在这里。' : page === 'full' ? '把每一道题，做得更明白。' : `${compactRefs.length} 道核心题，集中练起来。`}</h1><p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。' : page === 'full' ? '从原题库随机练习，答对后 0.4 秒自动进入下一题。' : '从全量原题中精选 300 道，保留原选项与配图。'}</p></section>
+          <section className="welcome"><div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div><h1>{page === 'favorites' ? '把值得回看的题，留在这里。' : page === 'full' ? '把每一道题，做得更明白。' : `${compactRefs.length} 道核心题，集中练起来。`}</h1><p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。' : page === 'full' ? '从原题库随机练习，答对后 1 秒自动进入下一题。' : '从全量原题中精选 300 道，保留原选项与配图。'}</p></section>
           <section className="stats" aria-label="练习数据">
             <div className="stat"><span>已练题目</span><div><strong>{answeredCount}</strong><small> / {statRefs.length}</small></div><div className="stat-track"><span style={{ width: `${statRefs.length ? answeredCount / statRefs.length * 100 : 0}%` }} /></div></div>
             <div className="stat"><span>当前正确率</span><div><strong>{accuracy}</strong><small>%</small></div><div className="stat-caption">答对 {correctCount} 题</div></div>
