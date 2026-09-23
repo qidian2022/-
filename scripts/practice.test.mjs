@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { initialState, loadState, restartState, saveState } from '../src/practice.ts'
+import { COMPACT_STORAGE_KEY, initialState, loadState, restartState, saveState } from '../src/practice.ts'
 
 const questions = [
   { id: 1, options: [{ key: 'A' }, { key: 'B' }], answer: 'B' },
@@ -47,4 +47,24 @@ test('stale question IDs and invalid answers are ignored', () => {
   assert.deepEqual(state.answers, { 2: 'A' })
   assert.equal(state.favoriteIndex, 0)
   assert.equal(state.allIndex, 1)
+})
+
+test('the two question banks keep separate answers and favorites', () => {
+  const memory = new Map()
+  globalThis.localStorage = {
+    getItem: (key) => memory.get(key) ?? null,
+    setItem: (key, value) => memory.set(key, value),
+  }
+  const full = initialState(questions)
+  full.answers[1] = 'B'
+  full.favorites = [1]
+  saveState(full)
+
+  const compact = initialState(questions)
+  compact.answers[2] = 'A'
+  compact.favorites = [2]
+  saveState(compact, COMPACT_STORAGE_KEY)
+
+  assert.deepEqual(loadState(questions), full)
+  assert.deepEqual(loadState(questions, COMPACT_STORAGE_KEY), compact)
 })
