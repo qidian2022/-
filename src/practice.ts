@@ -22,6 +22,7 @@ export type PracticeState = {
 }
 
 const STORAGE_KEY = 'kemuyi-practice-v1'
+export const COMPACT_STORAGE_KEY = 'kemuyi-compact-practice-v1'
 
 export function shuffled(ids: number[]): number[] {
   const result = [...ids]
@@ -43,11 +44,11 @@ export function initialState(questions: Question[]): PracticeState {
   }
 }
 
-export function loadState(questions: Question[]): PracticeState {
+export function loadState(questions: Question[], storageKey = STORAGE_KEY): PracticeState {
   const fresh = initialState(questions)
   let stored: Partial<PracticeState> | null = null
   try {
-    stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
+    stored = JSON.parse(localStorage.getItem(storageKey) ?? 'null')
   } catch {
     return fresh
   }
@@ -89,9 +90,9 @@ export function loadState(questions: Question[]): PracticeState {
   }
 }
 
-export function saveState(state: PracticeState): void {
+export function saveState(state: PracticeState, storageKey = STORAGE_KEY): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    localStorage.setItem(storageKey, JSON.stringify(state))
   } catch {
     // Practice still works when browser storage is unavailable.
   }

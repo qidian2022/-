@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import rawQuestions from './generated/questions.json'
+import rawCompactQuestions from './generated/compact-questions.json'
 import {
+  COMPACT_STORAGE_KEY,
   loadState,
   restartState,
   saveState,
@@ -11,6 +13,17 @@ import {
 
 const questions = rawQuestions as Question[]
 const byId = new Map(questions.map((question) => [question.id, question]))
+const compactQuestions = rawCompactQuestions as Question[]
+const compactById = new Map(compactQuestions.map((question) => [question.id, question]))
+type Bank = 'full' | 'compact'
+
+function loadBank(): Bank {
+  try {
+    return localStorage.getItem('kemuyi-active-bank-v1') === 'compact' ? 'compact' : 'full'
+  } catch {
+    return 'full'
+  }
+}
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
@@ -28,8 +41,12 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 }
 
 function App() {
-  const [state, setState] = useState(() => loadState(questions))
+  const [bank, setBank] = useState<Bank>(loadBank)
+  const [fullState, setFullState] = useState(() => loadState(questions))
+  const [compactState, setCompactState] = useState(() => loadState(compactQuestions, COMPACT_STORAGE_KEY))
   const [showReset, setShowReset] = useState(false)
+  const state = bank === 'full' ? fullState : compactState
+  const bankQuestions = bank === 'full' ? questions : compactQuestions
   const favoriteSet = useMemo(() => new Set(state.favorites), [state.favorites])
   const visibleIds = useMemo(
     () => state.mode === 'all' ? state.order : state.order.filter((id) => favoriteSet.has(id)),
@@ -39,44 +56,59 @@ function App() {
     state.mode === 'all' ? state.allIndex : state.favoriteIndex,
     Math.max(visibleIds.length - 1, 0),
   )
-  const question = byId.get(visibleIds[currentIndex])
+  const fullQuestion = bank === 'full' ? byId.get(visibleIds[currentIndex]) : undefined
+  const compactQuestion = bank === 'compact' ? compactById.get(visibleIds[currentIndex]) : undefined
+  const question = fullQuestion ?? compactQuestion
   const selected = question ? state.answers[question.id] : undefined
   const answeredCount = Object.keys(state.answers).length
   const correctCount = Object.entries(state.answers).filter(
-    ([id, answer]) => byId.get(Number(id))?.answer === answer,
+    ([id, answer]) => (bank === 'full' ? byId : compactById).get(Number(id))?.answer === answer,
   ).length
   const accuracy = answeredCount ? Math.round((correctCount / answeredCount) * 100) : 0
 
-  useEffect(() => saveState(state), [state])
+  useEffect(() => saveState(fullState), [fullState])
+  useEffect(() => saveState(compactState, COMPACT_STORAGE_KEY), [compactState])
+  useEffect(() => {
+    try { localStorage.setItem('kemuyi-active-bank-v1', bank) } catch { /* Continue without storage. */ }
+  }, [bank])
 
   function changeMode(mode: Mode) {
-    setState((previous) => ({ ...previous, mode }))
+    if (bank === 'full') setFullState((previous) => ({ ...previous, mode }))
+    else setCompactState((previous) => ({ ...previous, mode }))
   }
 
   function toggleFavorite(id: number) {
-    setState((previous) => ({
+    const update = <T extends { favorites: number[] }>(previous: T): T => ({
       ...previous,
       favorites: previous.favorites.includes(id)
         ? previous.favorites.filter((favorite) => favorite !== id)
         : [...previous.favorites, id],
-    }))
+    })
+    if (bank === 'full') setFullState(update)
+    else setCompactState(update)
   }
 
   function answerQuestion(id: number, answer: OptionKey) {
-    setState((previous) => previous.answers[id]
+    const update = <T extends { answers: Record<number, OptionKey> }>(previous: T): T => previous.answers[id]
       ? previous
-      : { ...previous, answers: { ...previous.answers, [id]: answer } })
+      : { ...previous, answers: { ...previous.answers, [id]: answer } }
+    if (bank === 'full') setFullState(update)
+    else setCompactState(update)
   }
 
   function moveTo(index: number) {
     if (index < 0 || index >= visibleIds.length) return
-    setState((previous) => previous.mode === 'all'
-      ? { ...previous, allIndex: index }
-      : { ...previous, favoriteIndex: index })
+    const update = <T extends { mode: Mode; allIndex: number; favoriteIndex: number }>(previous: T): T =>
+      previous.mode === 'all'
+        ? { ...previous, allIndex: index }
+        : { ...previous, favoriteIndex: index }
+    if (bank === 'full') setFullState(update)
+    else setCompactState(update)
   }
 
   function restart() {
-    setState((previous) => restartState(previous, questions))
+    if (bank === 'full') setFullState((previous) => restartState(previous, questions))
+    else setCompactState((previous) => restartState(previous, compactQuestions))
     setShowReset(false)
   }
 
@@ -88,10 +120,20 @@ function App() {
           <div><strong>稳稳过</strong><span>科目一练习</span></div>
         </div>
 
+        <div className="side-label">切换题库</div>
+        <div className="bank-list" role="group" aria-label="选择题库">
+          <button className={`bank-item ${bank === 'full' ? 'active' : ''}`} onClick={() => setBank('full')} aria-pressed={bank === 'full'}>
+            <span className="bank-symbol">全</span><span className="bank-name">全量题库<small>1844 道 · 选择题</small></span>
+          </button>
+          <button className={`bank-item ${bank === 'compact' ? 'active' : ''}`} onClick={() => setBank('compact')} aria-pressed={bank === 'compact'}>
+            <span className="bank-symbol">精</span><span className="bank-name">C1/C2 精简<small>300 道 · 选择练习</small></span>
+          </button>
+        </div>
+
         <div className="side-label">学习空间</div>
         <nav className="nav-list" aria-label="练习栏目">
           <button className={`nav-item ${state.mode === 'all' ? 'active' : ''}`} onClick={() => changeMode('all')} aria-current={state.mode === 'all' ? 'page' : undefined}>
-            <Icon name="grid" /><span>全部题目</span><small>{questions.length}</small>
+            <Icon name="grid" /><span>全部题目</span><small>{bankQuestions.length}</small>
           </button>
           <button className={`nav-item ${state.mode === 'favorites' ? 'active' : ''}`} onClick={() => changeMode('favorites')} aria-current={state.mode === 'favorites' ? 'page' : undefined}>
             <Icon name="bookmark" /><span>我的收藏</span><small>{state.favorites.length}</small>
@@ -102,7 +144,7 @@ function App() {
           <div className="side-card">
             <div className="side-card-icon"><Icon name="spark" size={18} /></div>
             <strong>每天进步一点点</strong>
-            <p>选完答案，记得看看解析。理解比记住更重要。</p>
+            <p>{bank === 'full' ? '选完答案，记得看看解析。理解比记住更重要。' : '先自己判断，再看原文件中的参考答案。'}</p>
           </div>
           <div className="side-foot">数据仅保存在当前浏览器</div>
         </div>
@@ -110,19 +152,19 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb">学习空间 <span>/</span> {state.mode === 'all' ? '全部题目' : '我的收藏'}</div>
+          <div className="breadcrumb">{bank === 'full' ? '全量题库' : 'C1/C2 精简'} <span>/</span> {state.mode === 'all' ? '全部题目' : '我的收藏'}</div>
           <div className="topbar-right"><span className="status-dot" />离线题库 · 即开即练</div>
         </header>
 
         <div className="content-wrap">
           <section className="welcome">
-            <div className="eyebrow"><span className="eyebrow-line" /> 科目一 · 理论知识</div>
-            <h1>{state.mode === 'all' ? '把每一道题，做得更明白。' : '把值得回看的题，留在这里。'}</h1>
-            <p>{state.mode === 'all' ? '从全部题目中随机练习，即时知道对错，慢慢练也能稳稳过。' : '你收藏的题目会一直保存在这台设备上，随时可以回来巩固。'}</p>
+            <div className="eyebrow"><span className="eyebrow-line" /> {bank === 'full' ? '科目一 · 全量练习' : '科目一 · C1/C2 核心考点'}</div>
+            <h1>{state.mode === 'favorites' ? '把值得回看的题，留在这里。' : bank === 'full' ? '把每一道题，做得更明白。' : '300 道核心题，集中练起来。'}</h1>
+            <p>{state.mode === 'favorites' ? '收藏和进度按题库分别保存在这台设备上。' : bank === 'full' ? '从全部题目中随机练习，即时知道对错，慢慢练也能稳稳过。' : '点选答案后立即判题。练习选项由精简题库其他答案自动组合。'}</p>
           </section>
 
           <section className="stats" aria-label="练习数据">
-            <div className="stat"><span>已练题目</span><div><strong>{answeredCount}</strong><small> / {questions.length}</small></div><div className="stat-track"><span style={{ width: `${answeredCount / questions.length * 100}%` }} /></div></div>
+            <div className="stat"><span>已练题目</span><div><strong>{answeredCount}</strong><small> / {bankQuestions.length}</small></div><div className="stat-track"><span style={{ width: `${answeredCount / bankQuestions.length * 100}%` }} /></div></div>
             <div className="stat"><span>当前正确率</span><div><strong>{accuracy}</strong><small>%</small></div><div className="stat-caption">答对 {correctCount} 题</div></div>
             <div className="stat"><span>收藏题目</span><div><strong>{state.favorites.length}</strong><small> 道</small></div><div className="stat-caption">重点题，随时复习</div></div>
           </section>
@@ -138,12 +180,11 @@ function App() {
               </div>
               <div className="question-progress" aria-hidden="true"><span style={{ width: `${(currentIndex + 1) / visibleIds.length * 100}%` }} /></div>
               <div className="question-body">
-                <div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>原题 #{question.id}</span></div>
+                <div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{fullQuestion ? '原题' : '精简题'} #{question.id}</span></div>
                 <h2 id="question-title">{question.question}</h2>
                 {question.images.length > 0 && <div className="question-images">{question.images.map((path) => <img key={path} src={`${import.meta.env.BASE_URL}${path}`} alt="题目配图" loading="lazy" />)}</div>}
-                <div className="answer-hint">请选择一个答案</div>
-                <div className="options">
-                  {question.options.map((option) => {
+                <div className="answer-hint">{bank === 'full' ? '请选择一个答案' : '请选择与原文件参考答案相符的一项 · 其余选项自动组合'}</div>
+                <div className="options">{question.options.map((option) => {
                     const isCorrect = selected && option.key === question.answer
                     const isWrong = selected === option.key && option.key !== question.answer
                     return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`} disabled={Boolean(selected)} onClick={() => answerQuestion(question.id, option.key)}>
@@ -151,11 +192,10 @@ function App() {
                       {isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}
                       {isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}
                     </button>
-                  })}
-                </div>
+                  })}</div>
                 {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status">
                   <div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div>
-                  <div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{question.explanation || '暂无解析'}</p><a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a></div>
+                  <div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{bank === 'full' ? question.explanation || '暂无解析' : `原文件参考答案：${question.explanation}`}</p>{fullQuestion ? <a href={fullQuestion.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a> : <span className="generated-note">本题选项由题库答案自动组合；原文件没有逐题解析。</span>}</div>
                 </div>}
               </div>
               <div className="question-footer">
@@ -169,7 +209,7 @@ function App() {
           ) : <section className="empty-card"><div className="empty-icon"><Icon name="bookmark" size={27} /></div><h2>还没有收藏的题目</h2><p>遇到想回看的题，点击题目右上角的书签即可收藏。</p><button className="button-primary" onClick={() => changeMode('all')}>去刷题 <Icon name="arrowRight" size={17} /></button></section>}
 
           <div className="bottom-row">
-            <div className="source-note">题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a> · 采集于 2026-09-23 · 内容未经官方核验</div>
+            <div className="source-note">{bank === 'full' ? <>题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a> · 采集于 2026-09-23 · 内容未经官方核验</> : <>C1/C2 核心题原创归纳 · 选项自动组合 · 非官方考试原题</>}</div>
             <button className="reset-link" onClick={() => setShowReset(true)}><Icon name="restart" size={16} /> 重新开始</button>
           </div>
         </div>
