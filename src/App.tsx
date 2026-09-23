@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import rawQuestions from './generated/questions.json'
 import rawCompactQuestions from './generated/compact-questions.json'
 import { COMPACT_ORDER_STORAGE_KEY, COMPACT_STORAGE_KEY, LEGACY_STORAGE_KEY, clearLegacyState, loadMigratedState, loadState, recordAnswer, restartState, saveState, type OptionKey, type Question } from './practice'
@@ -43,6 +43,32 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
     spark: <><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2Z" /><path d="m19 17 .6 1.4L21 19l-1.4.6L19 21l-.6-1.4L17 19l1.4-.6L19 17Z" /></>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
+}
+
+function QuestionImage({ path }: { path: string }) {
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
+  const imageRef = useRef<HTMLImageElement>(null)
+
+  useEffect(() => {
+    const image = imageRef.current
+    if (image?.complete) setStatus(image.naturalWidth > 0 ? 'loaded' : 'error')
+  }, [path])
+
+  return <div className="question-image">
+    {status !== 'loaded' && <p className="question-image-message" role="status">
+      {status === 'error' ? '图片加载失败，请尝试刷新/打开VPN' : '图片正在加载，长时间等待请尝试刷新/打开VPN'}
+    </p>}
+    <img
+      ref={imageRef}
+      src={`${import.meta.env.BASE_URL}${path}`}
+      alt="题目配图"
+      loading="eager"
+      decoding="async"
+      className={status === 'loaded' ? 'loaded' : ''}
+      onLoad={() => setStatus('loaded')}
+      onError={() => setStatus('error')}
+    />
+  </div>
 }
 
 function App() {
@@ -174,7 +200,7 @@ function App() {
           {question ? <section className="question-card" aria-labelledby="question-title">
             <div className="question-top"><div className="question-count"><span className="count-accent">{String(currentIndex + 1).padStart(2, '0')}</span><span className="count-divider">/</span>{visibleRefs.length} <span className="count-label">题</span></div><div className="question-tools"><span className="type-badge">{question.options.length === 2 ? '判断题' : '单选题'}</span><button className={`favorite-button ${favoriteSet.has(currentRef.id) ? 'is-favorite' : ''}`} onClick={toggleFavorite} aria-pressed={favoriteSet.has(currentRef.id)} aria-label={favoriteSet.has(currentRef.id) ? '取消收藏' : '收藏此题'} title={favoriteSet.has(currentRef.id) ? '取消收藏' : '收藏此题'}><Icon name="bookmark" size={20} /></button></div></div>
             <div className="question-progress" aria-hidden="true"><span style={{ width: `${(currentIndex + 1) / visibleRefs.length * 100}%` }} /></div>
-            <div className="question-body"><div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{isCompactQuestion ? '精简题' : '原题'} #{question.id}</span></div><h2 id="question-title">{question.question}</h2>{question.images.length > 0 && <div className="question-images">{question.images.map((path) => <img key={path} src={`${import.meta.env.BASE_URL}${path}`} alt="题目配图" loading="lazy" />)}</div>}<div className="answer-hint">请选择一个答案</div><div className="options">{question.options.map((option) => { const isCorrect = Boolean(selected) && option.key === question.answer; const isWrong = selected === option.key && option.key !== question.answer; return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`} disabled={Boolean(selected)} onClick={() => answerQuestion(option.key)}><span className="option-letter">{option.key}</span><span className="option-text">{option.text}</span>{isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}{isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}</button> })}</div>
+            <div className="question-body"><div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{isCompactQuestion ? '精简题' : '原题'} #{question.id}</span></div><h2 id="question-title">{question.question}</h2>{question.images.length > 0 && <div className="question-images">{question.images.map((path) => <QuestionImage key={path} path={path} />)}</div>}<div className="answer-hint">请选择一个答案</div><div className="options">{question.options.map((option) => { const isCorrect = Boolean(selected) && option.key === question.answer; const isWrong = selected === option.key && option.key !== question.answer; return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`} disabled={Boolean(selected)} onClick={() => answerQuestion(option.key)}><span className="option-letter">{option.key}</span><span className="option-text">{option.text}</span>{isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}{isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}</button> })}</div>
               {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status"><div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div><div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{question.explanation || '暂无解析'}</p><a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>{selected === question.answer && pendingAdvance?.key === currentRef.key && <span className="auto-result-note">即将进入下一题</span>}{selected !== question.answer && favoriteSet.has(currentRef.id) && <span className="auto-result-note">已在我的收藏中</span>}</div></div>}
             </div>
             <div className="question-footer"><span className="keyboard-tip">按照自己的节奏，一题一题来</span><div className="question-actions"><button className="button-secondary" disabled={currentIndex === 0} onClick={() => moveTo(currentIndex - 1)}><Icon name="arrowLeft" size={17} /> 上一题</button><button className="button-primary" disabled={currentIndex === visibleRefs.length - 1} onClick={() => moveTo(currentIndex + 1)}>下一题 <Icon name="arrowRight" size={17} /></button></div></div>
