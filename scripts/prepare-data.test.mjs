@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { makeCompactChoiceQuestions, parseCompactQuestions, parseQuestions } from './prepare-data.mjs'
+import { excludedCompactIds, excludedFullIds, makeCompactChoiceQuestions, parseCompactQuestions, parseQuestions } from './prepare-data.mjs'
 
 test('the supplied question bank has complete answers and local images', () => {
   const root = new URL('..', import.meta.url)
@@ -16,6 +16,9 @@ test('the supplied question bank has complete answers and local images', () => {
   assert.equal(questions.filter((question) => !question.explanation).length, 5)
   assert.equal(new Set(questions.map((question) => question.id)).size, questions.length)
   assert.ok(questions.every((question) => question.sourceUrl.startsWith('https://www.aijiaxiao.com/tiba/')))
+  const published = questions.filter((question) => !excludedFullIds.has(question.id))
+  assert.equal(published.length, 1840)
+  assert.ok(published.every((question) => !['驾驶与准驾车型不符的机动车一次记几分？', '饮酒后驾驶机动车一次记几分？'].includes(question.question)))
 })
 
 test('the C1/C2 concise bank contains 300 consecutive question and answer cards', () => {
@@ -28,6 +31,9 @@ test('the C1/C2 concise bank contains 300 consecutive question and answer cards'
   assert.ok(questions.every((question) => question.question && question.answer))
   const choices = makeCompactChoiceQuestions(questions)
   assert.equal(choices.length, 300)
+  const published = choices.filter((question) => !excludedCompactIds.has(question.id))
+  assert.equal(published.length, 298)
+  assert.ok(published.every((question) => !['驾驶与准驾车型不符的机动车，一次记几分？', '饮酒后驾驶机动车一次记几分？'].includes(question.question)))
   for (const [index, question] of choices.entries()) {
     assert.equal(question.options.length, 4)
     assert.equal(new Set(question.options.map((option) => option.text)).size, 4)

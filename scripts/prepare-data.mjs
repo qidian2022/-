@@ -9,6 +9,11 @@ const compactMarkdownPath = join(root, 'data', '科目一_C1C2_300题精简题�
 const compactOutputPath = join(root, 'src', 'generated', 'compact-questions.json')
 const imageRoot = join(root, 'public')
 
+// The two duplicated topics have contradictory answers between the supplied sources.
+// Keep the reference files intact and omit both versions from the published practice data.
+export const excludedFullIds = new Set([341, 342, 3554, 3555])
+export const excludedCompactIds = new Set([243, 251])
+
 export function parseQuestions(markdown, imageExists = () => true) {
   const matches = [...markdown.matchAll(/^## (\d+)\. (.+)$/gm)]
   const questions = []
@@ -176,11 +181,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     throw new Error(`题库数量不符：${questions.length} 道题、${imageCount} 张题图`)
   }
   mkdirSync(dirname(outputPath), { recursive: true })
-  writeFileSync(outputPath, JSON.stringify(questions))
+  const publishedQuestions = questions.filter((question) => !excludedFullIds.has(question.id))
+  writeFileSync(outputPath, JSON.stringify(publishedQuestions))
   const compactQuestions = makeCompactChoiceQuestions(
     parseCompactQuestions(readFileSync(compactMarkdownPath, 'utf8')),
-  )
+  ).filter((question) => !excludedCompactIds.has(question.id))
   writeFileSync(compactOutputPath, JSON.stringify(compactQuestions))
-  const withoutExplanation = questions.filter((question) => !question.explanation).length
-  console.log(`已生成全量题库 ${questions.length} 道（题图 ${imageCount} 张、无解析 ${withoutExplanation} 道）和 C1/C2 精简题库 ${compactQuestions.length} 道。`)
+  const withoutExplanation = publishedQuestions.filter((question) => !question.explanation).length
+  console.log(`已生成全量题库 ${publishedQuestions.length} 道（题图 ${imageCount} 张、无解析 ${withoutExplanation} 道）和独立的 C1/C2 精简题库 ${compactQuestions.length} 道。`)
 }
