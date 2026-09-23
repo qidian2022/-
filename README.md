@@ -28,7 +28,7 @@ npm run build
 
 ## 发布
 
-推送到 `main` 后，GitHub Actions 会构建并部署到 GitHub Pages。首次发布时，在仓库 Settings → Pages 中将 Source 设为 **GitHub Actions**。部署构建会根据 GitHub 仓库名称设置资源路径；当前仓库 `qidian2022/-` 对应 `/-/`。
+推送到 `main` 后，GitHub Actions 会构建并部署到 GitHub Pages。首次发布时，在仓库 Settings → Pages 中将 Source 设为 **GitHub Actions**。部署构建会根据 GitHub 仓库名称设置资源路径；仓库 `qidian2022/kemuyi-practice` 对应 `/kemuyi-practice/`。
 
 ## 内容与许可
 
