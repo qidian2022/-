@@ -21,8 +21,10 @@ export type PracticeState = {
   mode: Mode
 }
 
-const STORAGE_KEY = 'kemuyi-practice-v1'
+export const STORAGE_KEY = 'kemuyi-practice-v2'
+export const LEGACY_STORAGE_KEY = 'kemuyi-practice-v1'
 export const COMPACT_STORAGE_KEY = 'kemuyi-compact-practice-v1'
+export const COMPACT_ORDER_STORAGE_KEY = 'kemuyi-selected-order-v1'
 
 export function shuffled(ids: number[]): number[] {
   const result = [...ids]
@@ -87,6 +89,26 @@ export function loadState(questions: Question[], storageKey = STORAGE_KEY): Prac
     allIndex: safeIndex(stored.allIndex, order.length),
     favoriteIndex: safeIndex(stored.favoriteIndex, favorites.length),
     mode: stored.mode === 'favorites' ? 'favorites' : 'all',
+  }
+}
+
+export function loadMigratedState(questions: Question[]): PracticeState {
+  const current = loadState(questions)
+  try {
+    if (localStorage.getItem(STORAGE_KEY)) return current
+    const legacy = loadState(questions, LEGACY_STORAGE_KEY)
+    return { ...initialState(questions), favorites: legacy.favorites }
+  } catch { return current }
+}
+
+export function clearLegacyState(): void {
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
+    localStorage.removeItem(COMPACT_STORAGE_KEY)
+    localStorage.removeItem('kemuyi-full-order-v1')
+    localStorage.removeItem('kemuyi-favorite-index-v1')
+  } catch {
+    // Practice still works when browser storage is unavailable.
   }
 }
 

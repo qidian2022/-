@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { COMPACT_STORAGE_KEY, advanceIfCurrent, initialState, loadState, recordAnswer, restartState, saveState } from '../src/practice.ts'
+import { COMPACT_STORAGE_KEY, LEGACY_STORAGE_KEY, STORAGE_KEY, advanceIfCurrent, clearLegacyState, initialState, loadMigratedState, loadState, recordAnswer, restartState, saveState } from '../src/practice.ts'
 
 const questions = [
   { id: 1, options: [{ key: 'A' }, { key: 'B' }], answer: 'B' },
@@ -49,24 +49,31 @@ test('stale question IDs and invalid answers are ignored', () => {
   assert.equal(state.allIndex, 1)
 })
 
-test('the two question banks keep separate answers and favorites', () => {
+test('old answers are deleted while full-bank favorites carry into the new source', () => {
   const memory = new Map()
   globalThis.localStorage = {
     getItem: (key) => memory.get(key) ?? null,
     setItem: (key, value) => memory.set(key, value),
+    removeItem: (key) => memory.delete(key),
   }
-  const full = initialState(questions)
-  full.answers[1] = 'B'
-  full.favorites = [1]
-  saveState(full)
+  const oldFull = initialState(questions)
+  oldFull.answers[1] = 'B'
+  oldFull.favorites = [2]
+  saveState(oldFull, LEGACY_STORAGE_KEY)
+  const oldCompact = initialState(questions)
+  oldCompact.answers[2] = 'A'
+  oldCompact.favorites = [1]
+  saveState(oldCompact, COMPACT_STORAGE_KEY)
 
-  const compact = initialState(questions)
-  compact.answers[2] = 'A'
-  compact.favorites = [2]
-  saveState(compact, COMPACT_STORAGE_KEY)
-
-  assert.deepEqual(loadState(questions), full)
-  assert.deepEqual(loadState(questions, COMPACT_STORAGE_KEY), compact)
+  const migrated = loadMigratedState(questions)
+  assert.deepEqual(migrated.answers, {})
+  assert.deepEqual(migrated.favorites, [2])
+  saveState(migrated)
+  clearLegacyState()
+  assert.equal(memory.has(LEGACY_STORAGE_KEY), false)
+  assert.equal(memory.has(COMPACT_STORAGE_KEY), false)
+  assert.equal(memory.has(STORAGE_KEY), true)
+  assert.deepEqual(loadMigratedState(questions), migrated)
 })
 
 test('automatic advance moves only from the same visible question and mode', () => {

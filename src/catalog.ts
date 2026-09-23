@@ -4,9 +4,9 @@ export type Bank = 'full' | 'compact'
 export type Page = Bank | 'favorites'
 export type QuestionRef = { bank: Bank; id: number; key: string; question: Question }
 
-export const FULL_ORDER_KEY = 'kemuyi-full-order-v1'
+export const FULL_ORDER_KEY = 'kemuyi-full-order-v2'
 export const ACTIVE_PAGE_KEY = 'kemuyi-active-page-v2'
-export const FAVORITE_INDEX_KEY = 'kemuyi-favorite-index-v1'
+export const FAVORITE_INDEX_KEY = 'kemuyi-favorite-index-v2'
 
 export function makeRefs(questions: Question[], bank: Bank): QuestionRef[] {
   return questions.map((question) => ({ bank, id: question.id, key: `${bank}:${question.id}`, question }))
@@ -38,11 +38,4 @@ export function loadFullOrder(refs: QuestionRef[], legacy: PracticeState): { ord
 
   const previousQuestion = `full:${legacy.order[legacy.allIndex]}`
   return { order: fresh, index: Math.max(fresh.indexOf(previousQuestion), 0) }
-}
-
-export function favoriteKeys(full: PracticeState, compact: PracticeState): Set<string> {
-  return new Set([
-    ...full.favorites.map((id) => `full:${id}`),
-    ...compact.favorites.map((id) => `compact:${id}`),
-  ])
 }

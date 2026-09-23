@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import rawQuestions from './generated/questions.json'
 import rawCompactQuestions from './generated/compact-questions.json'
-import { COMPACT_STORAGE_KEY, loadState, recordAnswer, restartState, saveState, type OptionKey, type Question } from './practice'
-import { ACTIVE_PAGE_KEY, FAVORITE_INDEX_KEY, FULL_ORDER_KEY, favoriteKeys, loadFullOrder, makeRefs, shuffledKeys, type Page } from './catalog'
+import { COMPACT_ORDER_STORAGE_KEY, COMPACT_STORAGE_KEY, LEGACY_STORAGE_KEY, clearLegacyState, loadMigratedState, loadState, recordAnswer, restartState, saveState, type OptionKey, type Question } from './practice'
+import { ACTIVE_PAGE_KEY, FAVORITE_INDEX_KEY, FULL_ORDER_KEY, loadFullOrder, makeRefs, shuffledKeys, type Page } from './catalog'
 
 const questions = rawQuestions as Question[]
 const compactQuestions = rawCompactQuestions as Question[]
@@ -10,13 +10,14 @@ const fullRefs = makeRefs(questions, 'full')
 const compactRefs = makeRefs(compactQuestions, 'compact')
 const refsByKey = new Map([...fullRefs, ...compactRefs].map((ref) => [ref.key, ref]))
 const compactRefsById = new Map(compactRefs.map((ref) => [ref.id, ref]))
+const compactIds = new Set(compactQuestions.map((question) => question.id))
 
 function loadPage(): Page {
   try {
     const page = localStorage.getItem(ACTIVE_PAGE_KEY)
     if (page === 'full' || page === 'compact' || page === 'favorites') return page
     const bank = localStorage.getItem('kemuyi-active-bank-v1') === 'compact' ? 'compact' : 'full'
-    const oldState = localStorage.getItem(bank === 'full' ? 'kemuyi-practice-v1' : COMPACT_STORAGE_KEY)
+    const oldState = localStorage.getItem(bank === 'full' ? LEGACY_STORAGE_KEY : COMPACT_STORAGE_KEY)
     return oldState && JSON.parse(oldState)?.mode === 'favorites' ? 'favorites' : bank
   } catch { return 'full' }
 }
@@ -45,32 +46,32 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 
 function App() {
   const [page, setPage] = useState<Page>(loadPage)
-  const [fullState, setFullState] = useState(() => loadState(questions))
-  const [compactState, setCompactState] = useState(() => loadState(compactQuestions, COMPACT_STORAGE_KEY))
+  const [fullState, setFullState] = useState(() => loadMigratedState(questions))
+  const [compactState, setCompactState] = useState(() => loadState(compactQuestions, COMPACT_ORDER_STORAGE_KEY))
   const [fullPractice, setFullPractice] = useState(() => loadFullOrder(fullRefs, fullState))
   const [favoriteIndex, setFavoriteIndex] = useState(loadFavoriteIndex)
   const [showReset, setShowReset] = useState(false)
   const [pendingAdvance, setPendingAdvance] = useState<{ page: Page; key: string; index: number } | null>(null)
 
-  const favoriteSet = useMemo(() => favoriteKeys(fullState, compactState), [fullState.favorites, compactState.favorites])
+  const favoriteSet = useMemo(() => new Set(fullState.favorites), [fullState.favorites])
   const visibleRefs = useMemo(() => {
     if (page === 'full') return fullPractice.order.map((key) => refsByKey.get(key)!).filter(Boolean)
     if (page === 'compact') return compactState.order.map((id) => compactRefsById.get(id)!).filter(Boolean)
-    const favoriteOrder = [...fullPractice.order, ...compactState.order.map((id) => `compact:${id}`)]
-    return favoriteOrder.filter((key) => favoriteSet.has(key)).map((key) => refsByKey.get(key)!).filter(Boolean)
+    return fullPractice.order.map((key) => refsByKey.get(key)!).filter((ref) => ref && favoriteSet.has(ref.id))
   }, [page, fullPractice.order, compactState.order, favoriteSet])
   const rawIndex = page === 'full' ? fullPractice.index : page === 'compact' ? compactState.allIndex : favoriteIndex
   const currentIndex = Math.min(rawIndex, Math.max(visibleRefs.length - 1, 0))
   const currentRef = visibleRefs[currentIndex]
   const question = currentRef?.question
-  const selected = currentRef && (currentRef.bank === 'full' ? fullState.answers[currentRef.id] : compactState.answers[currentRef.id])
+  const selected = currentRef && fullState.answers[currentRef.id]
   const statRefs = page === 'full' ? fullRefs : page === 'compact' ? compactRefs : visibleRefs
-  const answeredCount = statRefs.filter((ref) => Boolean((ref.bank === 'full' ? fullState : compactState).answers[ref.id])).length
-  const correctCount = statRefs.filter((ref) => (ref.bank === 'full' ? fullState : compactState).answers[ref.id] === ref.question.answer).length
+  const answeredCount = statRefs.filter((ref) => Boolean(fullState.answers[ref.id])).length
+  const correctCount = statRefs.filter((ref) => fullState.answers[ref.id] === ref.question.answer).length
   const accuracy = answeredCount ? Math.round(correctCount / answeredCount * 100) : 0
 
   useEffect(() => saveState(fullState), [fullState])
-  useEffect(() => saveState(compactState, COMPACT_STORAGE_KEY), [compactState])
+  useEffect(() => saveState(compactState, COMPACT_ORDER_STORAGE_KEY), [compactState])
+  useEffect(clearLegacyState, [])
   useEffect(() => { try { localStorage.setItem(FULL_ORDER_KEY, JSON.stringify(fullPractice)) } catch { /* Storage is optional. */ } }, [fullPractice])
   useEffect(() => { try { localStorage.setItem(FAVORITE_INDEX_KEY, String(favoriteIndex)) } catch { /* Storage is optional. */ } }, [favoriteIndex])
   useEffect(() => { try { localStorage.setItem(ACTIVE_PAGE_KEY, page) } catch { /* Storage is optional. */ } }, [page])
@@ -111,14 +112,12 @@ function App() {
         ? previous.favorites.filter((favorite) => favorite !== id)
         : [...previous.favorites, id],
     })
-    if (currentRef.bank === 'full') setFullState(update)
-    else setCompactState(update)
+    setFullState(update)
   }
 
   function answerQuestion(answer: OptionKey) {
     if (!currentRef || !question || selected) return
-    if (currentRef.bank === 'full') setFullState((previous) => recordAnswer(previous, currentRef.id, answer, question.answer))
-    else setCompactState((previous) => recordAnswer(previous, currentRef.id, answer, question.answer))
+    setFullState((previous) => recordAnswer(previous, currentRef.id, answer, question.answer))
     if (answer === question.answer && currentIndex < visibleRefs.length - 1) {
       setPendingAdvance({ page, key: currentRef.key, index: currentIndex })
     }
@@ -135,15 +134,16 @@ function App() {
   function restart() {
     setPendingAdvance(null)
     if (page === 'compact') {
+      setFullState((previous) => ({
+        ...previous,
+        answers: Object.fromEntries(Object.entries(previous.answers).filter(([id]) => !compactIds.has(Number(id)))),
+      }))
       setCompactState((previous) => restartState(previous, compactQuestions))
-    } else if (page === 'full') {
-      setFullState((previous) => restartState(previous, questions))
-      setFullPractice({ order: shuffledKeys(fullRefs), index: 0 })
     } else {
       setFullState((previous) => restartState(previous, questions))
       setCompactState((previous) => restartState(previous, compactQuestions))
       setFullPractice({ order: shuffledKeys(fullRefs), index: 0 })
-      setFavoriteIndex(0)
+      if (page === 'favorites') setFavoriteIndex(0)
     }
     setShowReset(false)
   }
@@ -164,24 +164,24 @@ function App() {
       <main className="main-content">
         <header className="topbar"><div className="breadcrumb">{pageName}</div><div className="topbar-right"><span className="status-dot" />离线题库 · 即开即练</div></header>
         <div className="content-wrap">
-          <section className="welcome"><div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div><h1>{page === 'favorites' ? '把值得回看的题，留在这里。' : page === 'full' ? '把每一道题，做得更明白。' : `${compactRefs.length} 道核心题，集中练起来。`}</h1><p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。' : page === 'full' ? '从原题库随机练习，答对后 0.4 秒自动进入下一题。' : '精简题来自单独的问答文件，选项由其他答案自动组合。'}</p></section>
+          <section className="welcome"><div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div><h1>{page === 'favorites' ? '把值得回看的题，留在这里。' : page === 'full' ? '把每一道题，做得更明白。' : `${compactRefs.length} 道核心题，集中练起来。`}</h1><p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。' : page === 'full' ? '从原题库随机练习，答对后 0.4 秒自动进入下一题。' : '从全量原题中精选 300 道，保留原选项与配图。'}</p></section>
           <section className="stats" aria-label="练习数据">
             <div className="stat"><span>已练题目</span><div><strong>{answeredCount}</strong><small> / {statRefs.length}</small></div><div className="stat-track"><span style={{ width: `${statRefs.length ? answeredCount / statRefs.length * 100 : 0}%` }} /></div></div>
             <div className="stat"><span>当前正确率</span><div><strong>{accuracy}</strong><small>%</small></div><div className="stat-caption">答对 {correctCount} 题</div></div>
             <div className="stat"><span>收藏题目</span><div><strong>{favoriteSet.size}</strong><small> 道</small></div><div className="stat-caption">两个题库的收藏与错题</div></div>
           </section>
           {question ? <section className="question-card" aria-labelledby="question-title">
-            <div className="question-top"><div className="question-count"><span className="count-accent">{String(currentIndex + 1).padStart(2, '0')}</span><span className="count-divider">/</span>{visibleRefs.length} <span className="count-label">题</span></div><div className="question-tools"><span className="type-badge">{question.options.length === 2 ? '判断题' : '单选题'}</span><button className={`favorite-button ${favoriteSet.has(currentRef.key) ? 'is-favorite' : ''}`} onClick={toggleFavorite} aria-pressed={favoriteSet.has(currentRef.key)} aria-label={favoriteSet.has(currentRef.key) ? '取消收藏' : '收藏此题'} title={favoriteSet.has(currentRef.key) ? '取消收藏' : '收藏此题'}><Icon name="bookmark" size={20} /></button></div></div>
+            <div className="question-top"><div className="question-count"><span className="count-accent">{String(currentIndex + 1).padStart(2, '0')}</span><span className="count-divider">/</span>{visibleRefs.length} <span className="count-label">题</span></div><div className="question-tools"><span className="type-badge">{question.options.length === 2 ? '判断题' : '单选题'}</span><button className={`favorite-button ${favoriteSet.has(currentRef.id) ? 'is-favorite' : ''}`} onClick={toggleFavorite} aria-pressed={favoriteSet.has(currentRef.id)} aria-label={favoriteSet.has(currentRef.id) ? '取消收藏' : '收藏此题'} title={favoriteSet.has(currentRef.id) ? '取消收藏' : '收藏此题'}><Icon name="bookmark" size={20} /></button></div></div>
             <div className="question-progress" aria-hidden="true"><span style={{ width: `${(currentIndex + 1) / visibleRefs.length * 100}%` }} /></div>
-            <div className="question-body"><div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{isCompactQuestion ? '精简题' : '原题'} #{question.id}</span></div><h2 id="question-title">{question.question}</h2>{question.images.length > 0 && <div className="question-images">{question.images.map((path) => <img key={path} src={`${import.meta.env.BASE_URL}${path}`} alt="题目配图" loading="lazy" />)}</div>}<div className="answer-hint">{isCompactQuestion ? '请选择与原文件参考答案相符的一项 · 其余选项自动组合' : '请选择一个答案'}</div><div className="options">{question.options.map((option) => { const isCorrect = Boolean(selected) && option.key === question.answer; const isWrong = selected === option.key && option.key !== question.answer; return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`} disabled={Boolean(selected)} onClick={() => answerQuestion(option.key)}><span className="option-letter">{option.key}</span><span className="option-text">{option.text}</span>{isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}{isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}</button> })}</div>
-              {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status"><div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div><div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{isCompactQuestion ? `原文件参考答案：${question.explanation}` : question.explanation || '暂无解析'}</p>{isCompactQuestion ? <span className="generated-note">本题选项由题库答案自动组合；原文件没有逐题解析。</span> : <a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>}{selected === question.answer && pendingAdvance?.key === currentRef.key && <span className="auto-result-note">即将进入下一题</span>}{selected !== question.answer && favoriteSet.has(currentRef.key) && <span className="auto-result-note">已在我的收藏中</span>}</div></div>}
+            <div className="question-body"><div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{isCompactQuestion ? '精简题' : '原题'} #{question.id}</span></div><h2 id="question-title">{question.question}</h2>{question.images.length > 0 && <div className="question-images">{question.images.map((path) => <img key={path} src={`${import.meta.env.BASE_URL}${path}`} alt="题目配图" loading="lazy" />)}</div>}<div className="answer-hint">请选择一个答案</div><div className="options">{question.options.map((option) => { const isCorrect = Boolean(selected) && option.key === question.answer; const isWrong = selected === option.key && option.key !== question.answer; return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`} disabled={Boolean(selected)} onClick={() => answerQuestion(option.key)}><span className="option-letter">{option.key}</span><span className="option-text">{option.text}</span>{isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}{isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}</button> })}</div>
+              {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status"><div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div><div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{question.explanation || '暂无解析'}</p><a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>{selected === question.answer && pendingAdvance?.key === currentRef.key && <span className="auto-result-note">即将进入下一题</span>}{selected !== question.answer && favoriteSet.has(currentRef.id) && <span className="auto-result-note">已在我的收藏中</span>}</div></div>}
             </div>
             <div className="question-footer"><span className="keyboard-tip">按照自己的节奏，一题一题来</span><div className="question-actions"><button className="button-secondary" disabled={currentIndex === 0} onClick={() => moveTo(currentIndex - 1)}><Icon name="arrowLeft" size={17} /> 上一题</button><button className="button-primary" disabled={currentIndex === visibleRefs.length - 1} onClick={() => moveTo(currentIndex + 1)}>下一题 <Icon name="arrowRight" size={17} /></button></div></div>
           </section> : <section className="empty-card"><div className="empty-icon"><Icon name="bookmark" size={27} /></div><h2>还没有收藏的题目</h2><p>答错的题会自动加入这里，也可以点击书签收藏。</p><button className="button-primary" onClick={() => switchPage('full')}>去刷题 <Icon name="arrowRight" size={17} /></button></section>}
-          <div className="bottom-row"><div className="source-note">{isCompactQuestion ? 'C1/C2 核心题原创归纳 · 选项自动组合 · 非官方考试原题' : <>题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a> · 采集于 2026-09-23 · 内容未经官方核验</>}</div><button className="reset-link" onClick={() => { setPendingAdvance(null); setShowReset(true) }}><Icon name="restart" size={16} /> 重新开始</button></div>
+          <div className="bottom-row"><div className="source-note"><>题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a> · 采集于 2026-09-23 · 内容未经官方核验{isCompactQuestion && ' · 精选题未收录解析'}</></div><button className="reset-link" onClick={() => { setPendingAdvance(null); setShowReset(true) }}><Icon name="restart" size={16} /> 重新开始</button></div>
         </div>
       </main>
-      {showReset && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowReset(false) }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title"><div className="modal-symbol"><Icon name="restart" size={23} /></div><h2 id="reset-title">重新开始练习？</h2><p>{page === 'compact' ? '精简题库的答题记录和进度会清空，题目重新打乱；收藏保留。' : page === 'full' ? '全量题库的答题记录和进度会清空，题目重新打乱；收藏保留。' : '两个题库的答题记录和进度会清空，题目重新打乱；收藏保留。'}</p><div className="modal-actions"><button className="button-secondary" onClick={() => setShowReset(false)}>继续练习</button><button className="button-primary" onClick={restart}>确认重新开始</button></div></div></div>}
+      {showReset && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowReset(false) }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title"><div className="modal-symbol"><Icon name="restart" size={23} /></div><h2 id="reset-title">重新开始练习？</h2><p>{page === 'compact' ? '这 300 道题在两个入口的答题记录都会清空，精选题序重新打乱；收藏保留。' : page === 'full' ? '全部答题记录和两个入口的进度会清空，题目重新打乱；收藏保留。' : '全部答题记录和两个入口的进度会清空，题目重新打乱；收藏保留。'}</p><div className="modal-actions"><button className="button-secondary" onClick={() => setShowReset(false)}>继续练习</button><button className="button-primary" onClick={restart}>确认重新开始</button></div></div></div>}
     </div>
   )
 }

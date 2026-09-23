@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { excludedCompactIds, excludedFullIds, makeCompactChoiceQuestions, parseCompactQuestions, parseQuestions } from './prepare-data.mjs'
+import { excludedFullIds, parseSelectedQuestions, parseQuestions } from './prepare-data.mjs'
 
 test('the supplied question bank has complete answers and local images', () => {
   const root = new URL('..', import.meta.url)
@@ -17,26 +17,23 @@ test('the supplied question bank has complete answers and local images', () => {
   assert.equal(new Set(questions.map((question) => question.id)).size, questions.length)
   assert.ok(questions.every((question) => question.sourceUrl.startsWith('https://www.aijiaxiao.com/tiba/')))
   const published = questions.filter((question) => !excludedFullIds.has(question.id))
-  assert.equal(published.length, 1840)
-  assert.ok(published.every((question) => !['驾驶与准驾车型不符的机动车一次记几分？', '饮酒后驾驶机动车一次记几分？'].includes(question.question)))
+  assert.equal(published.length, 1841)
+  assert.ok(published.every((question) => question.id !== 341 && question.id !== 3554 && question.id !== 3555))
+  assert.ok(published.some((question) => question.id === 342))
 })
 
-test('the C1/C2 concise bank contains 300 consecutive question and answer cards', () => {
+test('the 300 selected questions are original full-bank questions with valid images', () => {
   const root = new URL('..', import.meta.url)
-  const markdown = readFileSync(new URL('data/科目一_C1C2_300题精简题库.md', root), 'utf8')
-  const questions = parseCompactQuestions(markdown)
-  assert.equal(questions.length, 300)
-  assert.deepEqual(questions.map((question) => question.id), Array.from({ length: 300 }, (_, i) => i + 1))
-  assert.equal(new Set(questions.map((question) => question.chapter)).size, 10)
-  assert.ok(questions.every((question) => question.question && question.answer))
-  const choices = makeCompactChoiceQuestions(questions)
-  assert.equal(choices.length, 300)
-  const published = choices.filter((question) => !excludedCompactIds.has(question.id))
-  assert.equal(published.length, 298)
-  assert.ok(published.every((question) => !['驾驶与准驾车型不符的机动车，一次记几分？', '饮酒后驾驶机动车一次记几分？'].includes(question.question)))
-  for (const [index, question] of choices.entries()) {
-    assert.equal(question.options.length, 4)
-    assert.equal(new Set(question.options.map((option) => option.text)).size, 4)
-    assert.equal(question.options.find((option) => option.key === question.answer)?.text, questions[index].answer)
-  }
+  const full = parseQuestions(readFileSync(new URL('data/题库.md', root), 'utf8')).questions
+  const markdown = readFileSync(new URL('data/科目一_C1C2_原题精选300.md', root), 'utf8')
+  const selected = parseSelectedQuestions(markdown, full, (path) =>
+    readFileSync(new URL(`public/${path}`, root)).length > 0)
+  const publishedIds = new Set(full.filter((question) => !excludedFullIds.has(question.id)).map((question) => question.id))
+  assert.equal(selected.length, 300)
+  assert.equal(new Set(selected.map((question) => question.id)).size, 300)
+  assert.ok(selected.every((question) => publishedIds.has(question.id)))
+  assert.ok(selected.every((question) => question.options.some((option) => option.key === question.answer)))
+  assert.equal(selected.reduce((count, question) => count + question.images.length, 0), 128)
+  assert.ok(selected.some((question) => question.id === 342))
+  assert.ok(selected.every((question) => question.explanation === ''))
 })
