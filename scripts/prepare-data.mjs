@@ -9,8 +9,8 @@ const compactMarkdownPath = join(root, 'data', '科目一_C1C2_300题精简题�
 const compactOutputPath = join(root, 'src', 'generated', 'compact-questions.json')
 const imageRoot = join(root, 'public')
 
-// The two duplicated topics have contradictory answers between the supplied sources.
-// Keep the reference files intact and omit both versions from the published practice data.
+// One duplicated topic has contradictory answers. The user requested that both
+// listed topics be removed from both sources; keep the reference files intact.
 export const excludedFullIds = new Set([341, 342, 3554, 3555])
 export const excludedCompactIds = new Set([243, 251])
 
