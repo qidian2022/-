@@ -1,38 +1,19 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { loadFullOrder, makeRefs } from '../src/catalog.ts'
+import { makeRefs } from '../src/catalog.ts'
 import { initialState, recordAnswer } from '../src/practice.ts'
 
-const full = [{ id: 10, question: '原题', options: [{ key: 'A' }, { key: 'B' }], answer: 'B' }]
-const selected = [{ ...full[0], chapter: 'C1/C2 精选', explanation: '' }]
+const full = [{ id: 10, question: '原题', chapter: '原题', sourceUrl: '', options: [{ key: 'A' }, { key: 'B' }], answer: 'B', explanation: '原解析', images: [] }]
+const selected = [{ id: 10, chapter: 'C1/C2 精选' }]
 
-test('selected questions share original IDs and answer records with the full bank', () => {
-  const fullRef = makeRefs(full, 'full')[0]
-  const selectedRef = makeRefs(selected, 'compact')[0]
-  assert.equal(fullRef.id, selectedRef.id)
-  const answered = recordAnswer(initialState(full), selectedRef.id, 'A', selectedRef.question.answer)
-  assert.equal(answered.answers[fullRef.id], 'A')
-  assert.deepEqual(answered.favorites, [fullRef.id])
-  globalThis.localStorage = { getItem: () => null }
-  assert.deepEqual(loadFullOrder([fullRef], initialState(full)).order, ['full:10'])
-})
-
-test('the full question order and cursor survive a reload', () => {
-  const refs = makeRefs([{ ...full[0], id: 20 }, ...full], 'full')
-  globalThis.localStorage = {
-    getItem: () => JSON.stringify({ order: ['full:10', 'full:20'], index: 1 }),
-  }
-  assert.deepEqual(loadFullOrder(refs, initialState(full)), {
-    order: ['full:10', 'full:20'], index: 1,
-  })
-})
-
-test('removed questions disappear from saved order without losing the cursor', () => {
-  const refs = makeRefs(full, 'full')
-  globalThis.localStorage = {
-    getItem: () => JSON.stringify({ order: ['old:1', 'compact:10', 'full:10'], index: 2 }),
-  }
-  assert.deepEqual(loadFullOrder(refs, initialState(full)), {
-    order: ['full:10'], index: 0,
-  })
+test('selected refs reuse the source question and hide its explanation', () => {
+  const refs = makeRefs(full, selected)
+  assert.equal(refs.full[0].id, refs.compact[0].id)
+  assert.equal(refs.compact[0].question.question, '原题')
+  assert.equal(refs.compact[0].question.chapter, 'C1/C2 精选')
+  assert.equal(refs.compact[0].question.explanation, '')
+  assert.equal(refs.full[0].question.explanation, '原解析')
+  const state = recordAnswer(initialState(full, selected), 10, 'A', 'B')
+  assert.equal(state.answers[refs.full[0].id], 'A')
+  assert.deepEqual(state.favorites, [10])
 })

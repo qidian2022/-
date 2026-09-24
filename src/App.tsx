@@ -1,33 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import rawQuestions from './generated/questions.json'
-import rawCompactQuestions from './generated/compact-questions.json'
-import { COMPACT_ORDER_STORAGE_KEY, COMPACT_STORAGE_KEY, LEGACY_STORAGE_KEY, clearLegacyState, loadMigratedState, loadState, recordAnswer, restartState, saveState, type OptionKey, type Question } from './practice'
-import { ACTIVE_PAGE_KEY, FAVORITE_INDEX_KEY, FULL_ORDER_KEY, loadFullOrder, makeRefs, shuffledKeys, type Page } from './catalog'
+import catalogVersion from './generated/catalog-version.json'
+import { makeRefs, type QuestionRef } from './catalog'
+import {
+  STORAGE_KEY, clearLegacyState, loadMigratedState, recordAnswer, restartState, saveState,
+  type OptionKey, type Page, type PracticeData, type Question, type SelectedQuestion,
+} from './practice'
 
-const questions = rawQuestions as Question[]
-const compactQuestions = rawCompactQuestions as Question[]
-const fullRefs = makeRefs(questions, 'full')
-const compactRefs = makeRefs(compactQuestions, 'compact')
-const refsByKey = new Map([...fullRefs, ...compactRefs].map((ref) => [ref.key, ref]))
-const compactRefsById = new Map(compactRefs.map((ref) => [ref.id, ref]))
-const compactIds = new Set(compactQuestions.map((question) => question.id))
-
-function loadPage(): Page {
-  try {
-    const page = localStorage.getItem(ACTIVE_PAGE_KEY)
-    if (page === 'full' || page === 'compact' || page === 'favorites') return page
-    const bank = localStorage.getItem('kemuyi-active-bank-v1') === 'compact' ? 'compact' : 'full'
-    const oldState = localStorage.getItem(bank === 'full' ? LEGACY_STORAGE_KEY : COMPACT_STORAGE_KEY)
-    return oldState && JSON.parse(oldState)?.mode === 'favorites' ? 'favorites' : bank
-  } catch { return 'full' }
-}
-
-function loadFavoriteIndex(): number {
-  try {
-    const value = Number(localStorage.getItem(FAVORITE_INDEX_KEY))
-    return Number.isInteger(value) && value >= 0 ? value : 0
-  } catch { return 0 }
-}
+type Catalog = { version: string; questions: Question[]; selected: SelectedQuestion[] }
+type Ownership = 'checking' | 'writer' | 'reader' | 'unsupported'
+type PendingAdvance = { page: Page; id: number; index: number }
+const lockName = 'kemuyi-practice-writer-v3'
+const channelName = 'kemuyi-practice-takeover-v3'
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
@@ -48,169 +31,406 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 function QuestionImage({ path }: { path: string }) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
   const imageRef = useRef<HTMLImageElement>(null)
-
   useEffect(() => {
     const image = imageRef.current
     if (image?.complete) setStatus(image.naturalWidth > 0 ? 'loaded' : 'error')
   }, [path])
-
   return <div className="question-image">
     {status !== 'loaded' && <p className="question-image-message" role="status">
       {status === 'error' ? '图片加载失败，请尝试刷新/打开VPN' : '图片正在加载，长时间等待请尝试刷新/打开VPN'}
     </p>}
-    <img
-      ref={imageRef}
-      src={`${import.meta.env.BASE_URL}${path}`}
-      alt="题目配图"
-      loading="eager"
-      decoding="async"
-      className={status === 'loaded' ? 'loaded' : ''}
-      onLoad={() => setStatus('loaded')}
-      onError={() => setStatus('error')}
-    />
+    <img ref={imageRef} src={`${import.meta.env.BASE_URL}${path}`} alt="题目配图" loading="eager"
+      decoding="async" className={status === 'loaded' ? 'loaded' : ''}
+      onLoad={() => setStatus('loaded')} onError={() => setStatus('error')} />
   </div>
 }
 
-function App() {
-  const [page, setPage] = useState<Page>(loadPage)
-  const [fullState, setFullState] = useState(() => loadMigratedState(questions))
-  const [compactState, setCompactState] = useState(() => loadState(compactQuestions, COMPACT_ORDER_STORAGE_KEY))
-  const [fullPractice, setFullPractice] = useState(() => loadFullOrder(fullRefs, fullState))
-  const [favoriteIndex, setFavoriteIndex] = useState(loadFavoriteIndex)
-  const [showReset, setShowReset] = useState(false)
-  const [pendingAdvance, setPendingAdvance] = useState<{ page: Page; key: string; index: number } | null>(null)
+function Stats({ answered, total, correct, favorites }: { answered: number; total: number; correct: number; favorites: number }) {
+  const accuracy = answered ? Math.round(correct / answered * 100) : 0
+  return <section className="stats" aria-label="练习数据">
+    <div className="stat">
+      <span>已练题目</span><div><strong>{answered}</strong><small> / {total}</small></div>
+      <div className="stat-track"><span style={{ width: `${total ? answered / total * 100 : 0}%` }} /></div>
+    </div>
+    <div className="stat">
+      <span>当前正确率</span><div><strong>{accuracy}</strong><small>%</small></div>
+      <div className="stat-caption">答对 {correct} 题</div>
+    </div>
+    <div className="stat">
+      <span>收藏题目</span><div><strong>{favorites}</strong><small> 道</small></div>
+      <div className="stat-caption">两个题库的收藏与错题</div>
+    </div>
+  </section>
+}
 
-  const favoriteSet = useMemo(() => new Set(fullState.favorites), [fullState.favorites])
+function ResetDialog({ compact, onClose, onConfirm }: { compact: boolean; onClose: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose()
+  }}>
+    <div className="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+      <div className="modal-symbol"><Icon name="restart" size={23} /></div>
+      <h2 id="reset-title">重新开始练习？</h2>
+      <p>{compact
+        ? '这 300 道题在两个入口的答题记录都会清空，精选题序重新打乱；收藏保留。'
+        : '全部答题记录和两个入口的进度会清空，题目重新打乱；收藏保留。'}</p>
+      <div className="modal-actions">
+        <button className="button-secondary" onClick={onClose}>继续练习</button>
+        <button className="button-primary" onClick={onConfirm}>确认重新开始</button>
+      </div>
+    </div>
+  </div>
+}
+
+type QuestionCardProps = {
+  refItem: QuestionRef; index: number; total: number; selected?: OptionKey
+  favorite: boolean; writable: boolean; pendingAdvance: boolean
+  onFavorite: () => void; onAnswer: (answer: OptionKey) => void; onMove: (index: number) => void
+}
+function QuestionCard({ refItem, index, total, selected, favorite, writable, pendingAdvance, onFavorite, onAnswer, onMove }: QuestionCardProps) {
+  const question = refItem.question
+  return <section className="question-card" aria-labelledby="question-title">
+    <div className="question-top">
+      <div className="question-count"><span className="count-accent">{String(index + 1).padStart(2, '0')}</span><span className="count-divider">/</span>{total} <span className="count-label">题</span></div>
+      <div className="question-tools">
+        <span className="type-badge">{question.options.length === 2 ? '判断题' : '单选题'}</span>
+        <button className={`favorite-button ${favorite ? 'is-favorite' : ''}`} onClick={onFavorite}
+          disabled={!writable} aria-pressed={favorite} aria-label={favorite ? '取消收藏' : '收藏此题'}
+          title={favorite ? '取消收藏' : '收藏此题'}><Icon name="bookmark" size={20} /></button>
+      </div>
+    </div>
+    <div className="question-progress" aria-hidden="true"><span style={{ width: `${(index + 1) / total * 100}%` }} /></div>
+    <div className="question-body">
+      <div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{refItem.bank === 'compact' ? '精简题' : '原题'} #{question.id}</span></div>
+      <h2 id="question-title">{question.question}</h2>
+      {question.images.length > 0 && <div className="question-images">{question.images.map((path) => <QuestionImage key={path} path={path} />)}</div>}
+      <div className="answer-hint">请选择一个答案</div>
+      <div className="options">{question.options.map((option) => {
+        const isCorrect = Boolean(selected) && option.key === question.answer
+        const isWrong = selected === option.key && option.key !== question.answer
+        return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`}
+          disabled={!writable || Boolean(selected)} onClick={() => onAnswer(option.key)}>
+          <span className="option-letter">{option.key}</span><span className="option-text">{option.text}</span>
+          {isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}
+          {isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}
+        </button>
+      })}</div>
+      {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status">
+        <div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div>
+        <div className="explanation-content">
+          <strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong>
+          <p>{question.explanation || '暂无解析'}</p>
+          <a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>
+          {selected === question.answer && pendingAdvance && <span className="auto-result-note">即将进入下一题</span>}
+          {selected !== question.answer && favorite && <span className="auto-result-note">已在我的收藏中</span>}
+        </div>
+      </div>}
+    </div>
+    <div className="question-footer">
+      <span className="keyboard-tip">按照自己的节奏，一题一题来</span>
+      <div className="question-actions">
+        <button className="button-secondary" disabled={!writable || index === 0} onClick={() => onMove(index - 1)}><Icon name="arrowLeft" size={17} /> 上一题</button>
+        <button className="button-primary" disabled={!writable || index === total - 1} onClick={() => onMove(index + 1)}>下一题 <Icon name="arrowRight" size={17} /></button>
+      </div>
+    </div>
+  </section>
+}
+
+function PracticeApp({ catalog }: { catalog: Catalog }) {
+  const { questions, selected } = catalog
+  const refs = useMemo(() => makeRefs(questions, selected), [questions, selected])
+  const fullById = useMemo(() => new Map(refs.full.map((ref) => [ref.id, ref])), [refs])
+  const compactById = useMemo(() => new Map(refs.compact.map((ref) => [ref.id, ref])), [refs])
+  const selectedIds = useMemo(() => new Set(selected.map(({ id }) => id)), [selected])
+  const [data, setData] = useState(() => loadMigratedState(questions, selected).state)
+  const dataRef = useRef(data)
+  const [ownership, setOwnership] = useState<Ownership>('checking')
+  const ownershipRef = useRef(false)
+  const [unsaved, setUnsaved] = useState(false)
+  const unsavedRef = useRef(false)
+  const [waiting, setWaiting] = useState(false)
+  const [takeoverError, setTakeoverError] = useState(false)
+  const [showReset, setShowReset] = useState(false)
+  const [pendingAdvance, setPendingAdvance] = useState<PendingAdvance | null>(null)
+  const acquireRef = useRef<(wait: boolean, signal?: AbortSignal) => void>(() => {})
+  const takeoverAbortRef = useRef<AbortController | null>(null)
+  const channelRef = useRef<BroadcastChannel | null>(null)
+  const releaseRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    let active = true
+    if (!navigator.locks || !window.BroadcastChannel) {
+      setOwnership('unsupported')
+      return
+    }
+    const channel = new BroadcastChannel(channelName)
+    channelRef.current = channel
+    channel.onmessage = (event) => {
+      if (event.data?.type === 'save-failed' && takeoverAbortRef.current && !takeoverAbortRef.current.signal.aborted) {
+        takeoverAbortRef.current?.abort()
+        takeoverAbortRef.current = null
+        setWaiting(false)
+        setTakeoverError(true)
+        return
+      }
+      if (event.data?.type !== 'takeover' || !ownershipRef.current) return
+      if (unsavedRef.current) {
+        if (!saveState(dataRef.current, ownershipRef.current)) {
+          channel.postMessage({ type: 'save-failed' })
+          return
+        }
+        clearLegacyState()
+      }
+      unsavedRef.current = false
+      setUnsaved(false)
+      ownershipRef.current = false
+      setOwnership('reader')
+      setPendingAdvance(null)
+      setShowReset(false)
+      releaseRef.current?.()
+    }
+    const acquire = (wait: boolean, signal?: AbortSignal) => {
+      void navigator.locks.request(lockName, wait ? { mode: 'exclusive', signal } : { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+        if (!active || !lock) {
+          if (active) setOwnership('reader')
+          return
+        }
+        const latest = loadMigratedState(questions, selected)
+        dataRef.current = latest.state
+        setData(latest.state)
+        setPendingAdvance(null)
+        ownershipRef.current = true
+        const saved = !latest.needsSave || saveState(latest.state, ownershipRef.current)
+        if (saved) clearLegacyState()
+        unsavedRef.current = !saved
+        setUnsaved(!saved)
+        setWaiting(false)
+        setTakeoverError(false)
+        takeoverAbortRef.current = null
+        setOwnership('writer')
+        await new Promise<void>((resolve) => { releaseRef.current = resolve })
+        releaseRef.current = null
+        ownershipRef.current = false
+        if (active) setOwnership('reader')
+      }).catch(() => { if (active) { setOwnership('reader'); setWaiting(false); takeoverAbortRef.current = null } })
+    }
+    acquireRef.current = acquire
+    queueMicrotask(() => { if (active) acquire(false) })
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY || ownershipRef.current) return
+      const latest = loadMigratedState(questions, selected)
+      dataRef.current = latest.state
+      setData(latest.state)
+    }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      active = false
+      ownershipRef.current = false
+      takeoverAbortRef.current?.abort()
+      releaseRef.current?.()
+      window.removeEventListener('storage', onStorage)
+      channel.close()
+      channelRef.current = null
+    }
+  }, [questions, selected])
+
+  function mutate(update: (previous: PracticeData) => PracticeData): boolean {
+    if (!ownershipRef.current) return false
+    const next = update(dataRef.current)
+    if (next === dataRef.current) return false
+    const saved = saveState(next, ownershipRef.current)
+    dataRef.current = next
+    setData(next)
+    unsavedRef.current = !saved
+    setUnsaved(!saved)
+    if (saved) clearLegacyState()
+    return true
+  }
+
+  function takeOver() {
+    if (ownership !== 'reader' || waiting) return
+    setWaiting(true)
+    setTakeoverError(false)
+    const controller = new AbortController()
+    takeoverAbortRef.current = controller
+    channelRef.current?.postMessage({ type: 'takeover' })
+    acquireRef.current(true, controller.signal)
+  }
+
+  const favoriteSet = useMemo(() => new Set(data.favorites), [data.favorites])
+  const page = data.page
   const visibleRefs = useMemo(() => {
-    if (page === 'full') return fullPractice.order.map((key) => refsByKey.get(key)!).filter(Boolean)
-    if (page === 'compact') return compactState.order.map((id) => compactRefsById.get(id)!).filter(Boolean)
-    return fullPractice.order.map((key) => refsByKey.get(key)!).filter((ref) => ref && favoriteSet.has(ref.id))
-  }, [page, fullPractice.order, compactState.order, favoriteSet])
-  const rawIndex = page === 'full' ? fullPractice.index : page === 'compact' ? compactState.allIndex : favoriteIndex
+    if (page === 'full') return data.full.order.map((id) => fullById.get(id)!).filter(Boolean)
+    if (page === 'compact') return data.compact.order.map((id) => compactById.get(id)!).filter(Boolean)
+    return data.full.order.map((id) => fullById.get(id)!).filter((ref) => ref && favoriteSet.has(ref.id))
+  }, [page, data.full.order, data.compact.order, fullById, compactById, favoriteSet])
+  const rawIndex = page === 'full' ? data.full.index : page === 'compact' ? data.compact.index : data.favoriteIndex
   const currentIndex = Math.min(rawIndex, Math.max(visibleRefs.length - 1, 0))
   const currentRef = visibleRefs[currentIndex]
   const question = currentRef?.question
-  const selected = currentRef && fullState.answers[currentRef.id]
-  const statRefs = page === 'full' ? fullRefs : page === 'compact' ? compactRefs : visibleRefs
-  const answeredCount = statRefs.filter((ref) => Boolean(fullState.answers[ref.id])).length
-  const correctCount = statRefs.filter((ref) => fullState.answers[ref.id] === ref.question.answer).length
-  const accuracy = answeredCount ? Math.round(correctCount / answeredCount * 100) : 0
+  const answer = currentRef && data.answers[currentRef.id]
+  const statRefs = page === 'full' ? refs.full : page === 'compact' ? refs.compact : visibleRefs
+  const answeredCount = statRefs.filter((ref) => Boolean(data.answers[ref.id])).length
+  const correctCount = statRefs.filter((ref) => data.answers[ref.id] === ref.question.answer).length
 
-  useEffect(() => saveState(fullState), [fullState])
-  useEffect(() => saveState(compactState, COMPACT_ORDER_STORAGE_KEY), [compactState])
-  useEffect(clearLegacyState, [])
-  useEffect(() => { try { localStorage.setItem(FULL_ORDER_KEY, JSON.stringify(fullPractice)) } catch { /* Storage is optional. */ } }, [fullPractice])
-  useEffect(() => { try { localStorage.setItem(FAVORITE_INDEX_KEY, String(favoriteIndex)) } catch { /* Storage is optional. */ } }, [favoriteIndex])
-  useEffect(() => { try { localStorage.setItem(ACTIVE_PAGE_KEY, page) } catch { /* Storage is optional. */ } }, [page])
   useEffect(() => {
-    if (!pendingAdvance) return
-    if (pendingAdvance.page !== page || pendingAdvance.key !== currentRef?.key ||
-      pendingAdvance.index !== currentIndex || selected !== question?.answer || currentIndex >= visibleRefs.length - 1) {
+    if (!pendingAdvance || ownership !== 'writer') return
+    if (pendingAdvance.page !== page || pendingAdvance.id !== currentRef?.id ||
+      pendingAdvance.index !== currentIndex || answer !== question?.answer || currentIndex >= visibleRefs.length - 1) {
       setPendingAdvance(null)
       return
     }
     const timer = window.setTimeout(() => {
-      if (pendingAdvance.page === 'full') {
-        setFullPractice((previous) => previous.index === pendingAdvance.index && previous.order[previous.index] === pendingAdvance.key
-          ? { ...previous, index: previous.index + 1 } : previous)
-      } else if (pendingAdvance.page === 'compact') {
-        setCompactState((previous) => previous.allIndex === pendingAdvance.index &&
-          `compact:${previous.order[previous.allIndex]}` === pendingAdvance.key
-          ? { ...previous, allIndex: previous.allIndex + 1 } : previous)
-      } else {
-        setFavoriteIndex((previous) => previous === pendingAdvance.index ? previous + 1 : previous)
-      }
+      mutate((previous) => {
+        if (previous.page !== pendingAdvance.page) return previous
+        const key = previous.page === 'favorites' ? 'favoriteIndex' : previous.page
+        if (key === 'favoriteIndex') {
+          return previous.favoriteIndex === pendingAdvance.index && visibleRefs[previous.favoriteIndex]?.id === pendingAdvance.id
+            ? { ...previous, favoriteIndex: previous.favoriteIndex + 1 } : previous
+        }
+        const bank = previous[key]
+        return bank.index === pendingAdvance.index && bank.order[bank.index] === pendingAdvance.id
+          ? { ...previous, [key]: { ...bank, index: bank.index + 1 } } : previous
+      })
       setPendingAdvance(null)
     }, 1000)
     return () => window.clearTimeout(timer)
-  }, [pendingAdvance, page, currentRef?.key, currentIndex, selected, question?.answer, visibleRefs.length])
+  }, [pendingAdvance, ownership, page, currentRef?.id, currentIndex, answer, question?.answer, visibleRefs])
 
   function switchPage(nextPage: Page) {
     setPendingAdvance(null)
-    setPage(nextPage)
+    mutate((previous) => previous.page === nextPage ? previous : { ...previous, page: nextPage })
   }
-
   function toggleFavorite() {
     if (!currentRef) return
     const id = currentRef.id
-    const update = (previous: typeof fullState) => ({
-      ...previous,
-      favorites: previous.favorites.includes(id)
-        ? previous.favorites.filter((favorite) => favorite !== id)
-        : [...previous.favorites, id],
-    })
-    setFullState(update)
+    mutate((previous) => ({ ...previous, favorites: previous.favorites.includes(id)
+      ? previous.favorites.filter((favorite) => favorite !== id) : [...previous.favorites, id] }))
   }
-
-  function answerQuestion(answer: OptionKey) {
-    if (!currentRef || !question || selected) return
-    setFullState((previous) => recordAnswer(previous, currentRef.id, answer, question.answer))
-    if (answer === question.answer && currentIndex < visibleRefs.length - 1) {
-      setPendingAdvance({ page, key: currentRef.key, index: currentIndex })
+  function answerQuestion(selectedAnswer: OptionKey) {
+    if (!currentRef || !question || answer) return
+    if (mutate((previous) => recordAnswer(previous, currentRef.id, selectedAnswer, question.answer)) &&
+      selectedAnswer === question.answer && currentIndex < visibleRefs.length - 1) {
+      setPendingAdvance({ page, id: currentRef.id, index: currentIndex })
     }
   }
-
   function moveTo(index: number) {
     if (index < 0 || index >= visibleRefs.length) return
     setPendingAdvance(null)
-    if (page === 'full') setFullPractice((previous) => ({ ...previous, index }))
-    else if (page === 'compact') setCompactState((previous) => ({ ...previous, allIndex: index }))
-    else setFavoriteIndex(index)
+    mutate((previous) => page === 'favorites'
+      ? { ...previous, favoriteIndex: index }
+      : { ...previous, [page]: { ...previous[page], index } })
   }
-
   function restart() {
     setPendingAdvance(null)
-    if (page === 'compact') {
-      setFullState((previous) => ({
-        ...previous,
-        answers: Object.fromEntries(Object.entries(previous.answers).filter(([id]) => !compactIds.has(Number(id)))),
-      }))
-      setCompactState((previous) => restartState(previous, compactQuestions))
-    } else {
-      setFullState((previous) => restartState(previous, questions))
-      setCompactState((previous) => restartState(previous, compactQuestions))
-      setFullPractice({ order: shuffledKeys(fullRefs), index: 0 })
-      if (page === 'favorites') setFavoriteIndex(0)
-    }
+    mutate((previous) => restartState(previous, page === 'compact' ? 'compact' : 'full', selectedIds))
     setShowReset(false)
   }
 
+  const writable = ownership === 'writer'
   const pageName = page === 'full' ? '全量题库' : page === 'compact' ? 'C1/C2精简' : '我的收藏'
-  const isCompactQuestion = currentRef?.bank === 'compact'
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">稳</div><div><strong>稳稳过</strong><span>科目一练习 @qi_dian</span></div></div>
-        <nav className="nav-list" aria-label="练习栏目">
-          <button className={`nav-item ${page === 'full' ? 'active' : ''}`} onClick={() => switchPage('full')} aria-current={page === 'full' ? 'page' : undefined}><Icon name="grid" /><span>全量题库</span><small>{fullRefs.length}</small></button>
-          <button className={`nav-item ${page === 'compact' ? 'active' : ''}`} onClick={() => switchPage('compact')} aria-current={page === 'compact' ? 'page' : undefined}><Icon name="spark" /><span>C1/C2精简</span><small>{compactRefs.length}</small></button>
-          <button className={`nav-item ${page === 'favorites' ? 'active' : ''}`} onClick={() => switchPage('favorites')} aria-current={page === 'favorites' ? 'page' : undefined}><Icon name="bookmark" /><span>我的收藏</span><small>{favoriteSet.size}</small></button>
-        </nav>
-        <div className="sidebar-bottom"><div className="side-card"><div className="side-card-icon"><Icon name="spark" size={18} /></div><strong>每天进步一点点</strong><p>答错的题会自动加入收藏，方便之后集中复习。</p></div><div className="side-foot">数据仅保存在当前浏览器</div></div>
-      </aside>
-      <main className="main-content">
-        <header className="topbar"><div className="breadcrumb">{pageName}</div><div className="topbar-right"><span className="topbar-status"><span className="status-dot" />离线题库 · 即开即练</span><a className="star-link" href="https://github.com/qidian2022/kemuyi-practice" target="_blank" rel="noopener noreferrer" title="前往 GitHub 给项目 Star"><Icon name="star" size={16} />给项目 Star</a></div></header>
-        <div className="content-wrap">
-          <section className="welcome"><div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div><h1>{page === 'favorites' ? '把值得回看的题，留在这里。' : page === 'full' ? '把每一道题，做得更明白。' : `${compactRefs.length} 道核心题，集中练起来。`}</h1><p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。' : page === 'full' ? '从原题库随机练习，答对后 1 秒自动进入下一题。' : '从全量原题中精选 300 道，保留原选项与配图。'}</p></section>
-          <section className="stats" aria-label="练习数据">
-            <div className="stat"><span>已练题目</span><div><strong>{answeredCount}</strong><small> / {statRefs.length}</small></div><div className="stat-track"><span style={{ width: `${statRefs.length ? answeredCount / statRefs.length * 100 : 0}%` }} /></div></div>
-            <div className="stat"><span>当前正确率</span><div><strong>{accuracy}</strong><small>%</small></div><div className="stat-caption">答对 {correctCount} 题</div></div>
-            <div className="stat"><span>收藏题目</span><div><strong>{favoriteSet.size}</strong><small> 道</small></div><div className="stat-caption">两个题库的收藏与错题</div></div>
-          </section>
-          {question ? <section className="question-card" aria-labelledby="question-title">
-            <div className="question-top"><div className="question-count"><span className="count-accent">{String(currentIndex + 1).padStart(2, '0')}</span><span className="count-divider">/</span>{visibleRefs.length} <span className="count-label">题</span></div><div className="question-tools"><span className="type-badge">{question.options.length === 2 ? '判断题' : '单选题'}</span><button className={`favorite-button ${favoriteSet.has(currentRef.id) ? 'is-favorite' : ''}`} onClick={toggleFavorite} aria-pressed={favoriteSet.has(currentRef.id)} aria-label={favoriteSet.has(currentRef.id) ? '取消收藏' : '收藏此题'} title={favoriteSet.has(currentRef.id) ? '取消收藏' : '收藏此题'}><Icon name="bookmark" size={20} /></button></div></div>
-            <div className="question-progress" aria-hidden="true"><span style={{ width: `${(currentIndex + 1) / visibleRefs.length * 100}%` }} /></div>
-            <div className="question-body"><div className="question-meta"><span>{question.chapter}</span><span className="meta-separator">·</span><span>{isCompactQuestion ? '精简题' : '原题'} #{question.id}</span></div><h2 id="question-title">{question.question}</h2>{question.images.length > 0 && <div className="question-images">{question.images.map((path) => <QuestionImage key={path} path={path} />)}</div>}<div className="answer-hint">请选择一个答案</div><div className="options">{question.options.map((option) => { const isCorrect = Boolean(selected) && option.key === question.answer; const isWrong = selected === option.key && option.key !== question.answer; return <button key={option.key} className={`option ${isCorrect ? 'correct' : ''} ${isWrong ? 'wrong' : ''}`} disabled={Boolean(selected)} onClick={() => answerQuestion(option.key)}><span className="option-letter">{option.key}</span><span className="option-text">{option.text}</span>{isCorrect && <span className="option-result"><Icon name="check" size={17} /></span>}{isWrong && <span className="option-result"><Icon name="close" size={17} /></span>}</button> })}</div>
-              {selected && <div className={`explanation ${selected === question.answer ? 'is-correct' : 'is-wrong'}`} role="status"><div className="explanation-icon"><Icon name={selected === question.answer ? 'check' : 'close'} size={19} /></div><div className="explanation-content"><strong>{selected === question.answer ? '答对了，很棒！' : `答错了，正确答案是 ${question.answer}`}</strong><p>{question.explanation || '暂无解析'}</p><a href={question.sourceUrl} target="_blank" rel="noopener noreferrer">查看原题 <Icon name="external" size={14} /></a>{selected === question.answer && pendingAdvance?.key === currentRef.key && <span className="auto-result-note">即将进入下一题</span>}{selected !== question.answer && favoriteSet.has(currentRef.id) && <span className="auto-result-note">已在我的收藏中</span>}</div></div>}
-            </div>
-            <div className="question-footer"><span className="keyboard-tip">按照自己的节奏，一题一题来</span><div className="question-actions"><button className="button-secondary" disabled={currentIndex === 0} onClick={() => moveTo(currentIndex - 1)}><Icon name="arrowLeft" size={17} /> 上一题</button><button className="button-primary" disabled={currentIndex === visibleRefs.length - 1} onClick={() => moveTo(currentIndex + 1)}>下一题 <Icon name="arrowRight" size={17} /></button></div></div>
-          </section> : <section className="empty-card"><div className="empty-icon"><Icon name="bookmark" size={27} /></div><h2>还没有收藏的题目</h2><p>答错的题会自动加入这里，也可以点击书签收藏。</p><button className="button-primary" onClick={() => switchPage('full')}>去刷题 <Icon name="arrowRight" size={17} /></button></section>}
-          <div className="bottom-row"><div className="source-note"><>题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a> · 采集于 2026-09-23 · 内容未经官方核验{isCompactQuestion && ' · 精选题未收录解析'}</></div><button className="reset-link" onClick={() => { setPendingAdvance(null); setShowReset(true) }}><Icon name="restart" size={16} /> 重新开始</button></div>
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand">
+        <div className="brand-mark">稳</div>
+        <div><strong>稳稳过</strong><span>科目一练习 @qi_dian</span></div>
+      </div>
+      <nav className="nav-list" aria-label="练习栏目">
+        <button className={`nav-item ${page === 'full' ? 'active' : ''}`} disabled={!writable}
+          onClick={() => switchPage('full')} aria-current={page === 'full' ? 'page' : undefined}>
+          <Icon name="grid" /><span>全量题库</span><small>{refs.full.length}</small>
+        </button>
+        <button className={`nav-item ${page === 'compact' ? 'active' : ''}`} disabled={!writable}
+          onClick={() => switchPage('compact')} aria-current={page === 'compact' ? 'page' : undefined}>
+          <Icon name="spark" /><span>C1/C2精简</span><small>{refs.compact.length}</small>
+        </button>
+        <button className={`nav-item ${page === 'favorites' ? 'active' : ''}`} disabled={!writable}
+          onClick={() => switchPage('favorites')} aria-current={page === 'favorites' ? 'page' : undefined}>
+          <Icon name="bookmark" /><span>我的收藏</span><small>{favoriteSet.size}</small>
+        </button>
+      </nav>
+      <div className="sidebar-bottom">
+        <div className="side-card">
+          <div className="side-card-icon"><Icon name="spark" size={18} /></div>
+          <strong>每天进步一点点</strong>
+          <p>答错的题会自动加入收藏，方便之后集中复习。</p>
         </div>
-      </main>
-      {showReset && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowReset(false) }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title"><div className="modal-symbol"><Icon name="restart" size={23} /></div><h2 id="reset-title">重新开始练习？</h2><p>{page === 'compact' ? '这 300 道题在两个入口的答题记录都会清空，精选题序重新打乱；收藏保留。' : page === 'full' ? '全部答题记录和两个入口的进度会清空，题目重新打乱；收藏保留。' : '全部答题记录和两个入口的进度会清空，题目重新打乱；收藏保留。'}</p><div className="modal-actions"><button className="button-secondary" onClick={() => setShowReset(false)}>继续练习</button><button className="button-primary" onClick={restart}>确认重新开始</button></div></div></div>}
-    </div>
-  )
+        <div className="side-foot">数据仅保存在当前浏览器</div>
+      </div>
+    </aside>
+    <main className="main-content">
+      <header className="topbar">
+        <div className="breadcrumb">{pageName}</div>
+        <div className="topbar-right">
+          <span className="topbar-status"><span className="status-dot" />离线题库 · 即开即练</span>
+          <a className="star-link" href="https://github.com/qidian2022/kemuyi-practice"
+            target="_blank" rel="noopener noreferrer" title="前往 GitHub 给项目 Star">
+            <Icon name="star" size={16} />给项目 Star
+          </a>
+        </div>
+      </header>
+      <div className="content-wrap">
+        {ownership !== 'writer' && <div className="storage-notice" role="status">
+          <span>{ownership === 'checking' ? '正在检查练习记录…'
+            : ownership === 'unsupported' ? '当前浏览器不支持安全的多标签页写入，请使用新版浏览器。'
+              : takeoverError ? '另一标签页的当前进度尚未保存，暂不能接管。'
+                : waiting ? '正在接管练习，请稍候…' : '另一标签页正在练习；此页为只读。'}</span>
+          {ownership === 'reader' && <button className="button-secondary" disabled={waiting} onClick={takeOver}>接管练习</button>}
+        </div>}
+        {unsaved && <div className="storage-notice storage-error" role="alert">当前进度尚未保存，请保留此标签页并检查浏览器存储空间。</div>}
+        <section className="welcome">
+          <div className="eyebrow"><span className="eyebrow-line" /> 科目一 · {pageName}</div>
+          <h1>{page === 'favorites' ? '把值得回看的题，留在这里。'
+            : page === 'full' ? '把每一道题，做得更明白。'
+              : `${refs.compact.length} 道核心题，集中练起来。`}</h1>
+          <p>{page === 'favorites' ? '两个题库的手动收藏和答错题都在这里。'
+            : page === 'full' ? '从原题库随机练习，答对后 1 秒自动进入下一题。'
+              : '从全量原题中精选 300 道，保留原选项与配图。'}</p>
+        </section>
+        <Stats answered={answeredCount} total={statRefs.length} correct={correctCount} favorites={favoriteSet.size} />
+        {currentRef ? <QuestionCard refItem={currentRef} index={currentIndex} total={visibleRefs.length}
+          selected={answer} favorite={favoriteSet.has(currentRef.id)} writable={writable}
+          pendingAdvance={pendingAdvance?.id === currentRef.id} onFavorite={toggleFavorite}
+          onAnswer={answerQuestion} onMove={moveTo} />
+          : <section className="empty-card">
+            <div className="empty-icon"><Icon name="bookmark" size={27} /></div>
+            <h2>还没有收藏的题目</h2>
+            <p>答错的题会自动加入这里，也可以点击书签收藏。</p>
+            <button className="button-primary" disabled={!writable} onClick={() => switchPage('full')}>
+              去刷题 <Icon name="arrowRight" size={17} />
+            </button>
+          </section>}
+        <div className="bottom-row">
+          <div className="source-note">
+            题库来源：<a href="https://www.aijiaxiao.com/tiba/kmy/" target="_blank" rel="noopener noreferrer">爱驾校</a>
+            {' '}· 采集于 2026-09-23 · 内容未经官方核验{currentRef?.bank === 'compact' && ' · 精选题未收录解析'}
+          </div>
+          <button className="reset-link" disabled={!writable} onClick={() => { setPendingAdvance(null); setShowReset(true) }}>
+            <Icon name="restart" size={16} /> 重新开始
+          </button>
+        </div>
+      </div>
+    </main>
+    {showReset && <ResetDialog compact={page === 'compact'} onClose={() => setShowReset(false)} onConfirm={restart} />}
+  </div>
+}
+
+function App() {
+  const [catalog, setCatalog] = useState<Catalog | null>(null)
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch(`${import.meta.env.BASE_URL}data/catalog.json?v=${catalogVersion.version}`, { signal: controller.signal })
+      .then((response) => { if (!response.ok) throw new Error('题库加载失败'); return response.json() })
+      .then((value: Catalog) => {
+        if (!Array.isArray(value.questions) || !Array.isArray(value.selected)) throw new Error('题库格式无效')
+        setCatalog(value)
+      })
+      .catch(() => { if (!controller.signal.aborted) setError(true) })
+    return () => controller.abort()
+  }, [])
+  if (error) return <div className="load-message" role="alert">题库加载失败，请刷新页面重试。</div>
+  if (!catalog) return <div className="load-message" role="status">正在加载题库…</div>
+  return <PracticeApp catalog={catalog} />
 }
 
 export default App

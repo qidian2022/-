@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const markdownPath = join(root, 'data', '题库.md')
-const outputPath = join(root, 'src', 'generated', 'questions.json')
+const outputPath = join(root, 'public', 'data', 'catalog.json')
+const versionPath = join(root, 'src', 'generated', 'catalog-version.json')
 const compactMarkdownPath = join(root, 'data', '科目一_C1C2_原题精选300.md')
-const compactOutputPath = join(root, 'src', 'generated', 'compact-questions.json')
 const imageRoot = join(root, 'public')
 
 // The user restored original question 342 for the new selected bank. Keep the
@@ -99,7 +100,7 @@ export function parseSelectedQuestions(markdown, fullQuestions, imageExists = ()
     }
     if (images.some((image) => !imageExists(image))) throw new Error(`精选题 ${id} 的题图不存在`)
     seen.add(id)
-    selected.push({ ...source, chapter: `C1/C2 精选 · ${chapter}`, explanation: '' })
+    selected.push({ id, chapter: `C1/C2 精选 · ${chapter}` })
   }
 
   if (selected.length !== 300) throw new Error(`精选题数量不符：${selected.length}`)
@@ -116,7 +117,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   }
   mkdirSync(dirname(outputPath), { recursive: true })
   const publishedQuestions = questions.filter((question) => !excludedFullIds.has(question.id))
-  writeFileSync(outputPath, JSON.stringify(publishedQuestions))
   const compactQuestions = parseSelectedQuestions(
     readFileSync(compactMarkdownPath, 'utf8'), questions,
     (image) => existsSync(join(imageRoot, image)),
@@ -124,7 +124,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (compactQuestions.some((question) => excludedFullIds.has(question.id))) {
     throw new Error('精选题包含网页已排除的原题')
   }
-  writeFileSync(compactOutputPath, JSON.stringify(compactQuestions))
+  const payload = { questions: publishedQuestions, selected: compactQuestions }
+  const version = createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16)
+  writeFileSync(outputPath, JSON.stringify({ version, ...payload }))
+  mkdirSync(dirname(versionPath), { recursive: true })
+  writeFileSync(versionPath, JSON.stringify({ version }))
   const withoutExplanation = publishedQuestions.filter((question) => !question.explanation).length
   console.log(`已生成全量题库 ${publishedQuestions.length} 道（题图 ${imageCount} 张、无解析 ${withoutExplanation} 道）及其 C1/C2 精选子集 ${compactQuestions.length} 道。`)
 }

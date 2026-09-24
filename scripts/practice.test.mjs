@@ -1,100 +1,94 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { COMPACT_STORAGE_KEY, LEGACY_STORAGE_KEY, STORAGE_KEY, advanceIfCurrent, clearLegacyState, initialState, loadMigratedState, loadState, recordAnswer, restartState, saveState } from '../src/practice.ts'
+import {
+  COMPACT_ORDER_STORAGE_KEY, FULL_ORDER_KEY, LEGACY_STORAGE_KEY, OLD_STORAGE_KEY, STORAGE_KEY,
+  clearLegacyState, initialState, loadMigratedState, parseState, recordAnswer, restartState, saveState,
+} from '../src/practice.ts'
 
 const questions = [
   { id: 1, options: [{ key: 'A' }, { key: 'B' }], answer: 'B' },
   { id: 2, options: [{ key: 'A' }, { key: 'B' }], answer: 'A' },
 ]
+const selected = [{ id: 1, chapter: '精选' }]
 
-test('answers, favorites, and current question survive a reload', () => {
+function storage({ fail = false } = {}) {
   const memory = new Map()
   globalThis.localStorage = {
     getItem: (key) => memory.get(key) ?? null,
-    setItem: (key, value) => memory.set(key, value),
-  }
-  const state = initialState(questions)
-  state.answers[1] = 'B'
-  state.favorites = [1]
-  state.allIndex = 1
-  state.mode = 'favorites'
-  saveState(state)
-
-  assert.deepEqual(loadState(questions), state)
-
-  const restarted = restartState(state, questions)
-  assert.deepEqual(restarted.answers, {})
-  assert.deepEqual(restarted.favorites, [1])
-  assert.equal(restarted.mode, 'all')
-  assert.deepEqual(new Set(restarted.order), new Set([1, 2]))
-})
-
-test('stale question IDs and invalid answers are ignored', () => {
-  globalThis.localStorage = {
-    getItem: () => JSON.stringify({
-      order: [1, 999],
-      favorites: [1, 999, 1],
-      answers: { 1: 'C', 2: 'A', 999: 'B' },
-      allIndex: 99,
-      favoriteIndex: 99,
-      mode: 'favorites',
-    }),
-    setItem: () => {},
-  }
-  const state = loadState(questions)
-  assert.deepEqual(new Set(state.order), new Set([1, 2]))
-  assert.deepEqual(state.favorites, [1])
-  assert.deepEqual(state.answers, { 2: 'A' })
-  assert.equal(state.favoriteIndex, 0)
-  assert.equal(state.allIndex, 1)
-})
-
-test('old answers are deleted while full-bank favorites carry into the new source', () => {
-  const memory = new Map()
-  globalThis.localStorage = {
-    getItem: (key) => memory.get(key) ?? null,
-    setItem: (key, value) => memory.set(key, value),
+    setItem: (key, value) => { if (fail) throw new Error('Quota exceeded'); memory.set(key, value) },
     removeItem: (key) => memory.delete(key),
   }
-  const oldFull = initialState(questions)
-  oldFull.answers[1] = 'B'
-  oldFull.favorites = [2]
-  saveState(oldFull, LEGACY_STORAGE_KEY)
-  const oldCompact = initialState(questions)
-  oldCompact.answers[2] = 'A'
-  oldCompact.favorites = [1]
-  saveState(oldCompact, COMPACT_STORAGE_KEY)
+  return memory
+}
 
-  const migrated = loadMigratedState(questions)
-  assert.deepEqual(migrated.answers, {})
-  assert.deepEqual(migrated.favorites, [2])
-  saveState(migrated)
+test('one archive holds answers, favorites, orders and cursors', () => {
+  storage()
+  const state = initialState(questions, selected)
+  state.full.index = 1
+  state.compact.index = 0
+  state.page = 'compact'
+  state.favorites = [1]
+  state.favoriteIndex = 0
+  const answered = recordAnswer(state, 1, 'A', 'B')
+  assert.deepEqual(answered.favorites, [1])
+  assert.equal(answered.answers[1], 'A')
+  assert.equal(recordAnswer(answered, 1, 'B', 'B'), answered)
+  assert.equal(saveState(answered, false), false)
+  assert.equal(localStorage.getItem(STORAGE_KEY), null)
+  assert.equal(saveState(answered, true), true)
+  assert.deepEqual(loadMigratedState(questions, selected), { state: answered, needsSave: false })
+
+  const restarted = restartState(answered, 'compact', new Set([1]))
+  assert.deepEqual(restarted.answers, {})
+  assert.deepEqual(restarted.favorites, [1])
+  assert.equal(restarted.full.index, 1)
+  assert.equal(restarted.compact.index, 0)
+})
+
+test('saved state rejects stale IDs and invalid answers', () => {
+  storage()
+  const state = initialState(questions, selected)
+  const parsed = parseState({ ...state, answers: { 1: 'C', 2: 'A', 999: 'B' },
+    favorites: [1, 999, 1], full: { order: [1, 999], index: 99 },
+    favoriteIndex: 99 }, questions, selected)
+  assert.deepEqual(parsed.answers, { 2: 'A' })
+  assert.deepEqual(parsed.favorites, [1])
+  assert.deepEqual(new Set(parsed.full.order), new Set([1, 2]))
+  assert.equal(parsed.full.index, 1)
+  assert.equal(parsed.favoriteIndex, 0)
+})
+
+test('legacy data is cleared only after a confirmed new save', () => {
+  const memory = storage({ fail: true })
+  memory.set(OLD_STORAGE_KEY, JSON.stringify({ answers: { 1: 'B' }, favorites: [2], order: [1, 2], allIndex: 1 }))
+  memory.set(COMPACT_ORDER_STORAGE_KEY, JSON.stringify({ order: [1], allIndex: 0 }))
+  const migrated = loadMigratedState(questions, selected)
+  assert.equal(migrated.needsSave, true)
+  assert.deepEqual(migrated.state.answers, { 1: 'B' })
+  assert.deepEqual(migrated.state.favorites, [2])
+  assert.equal(migrated.state.full.index, 1)
+  assert.equal(saveState(migrated.state, true), false)
+  assert.equal(memory.has(OLD_STORAGE_KEY), true)
+  globalThis.localStorage.setItem = (key, value) => memory.set(key, value)
+  assert.equal(saveState(migrated.state, true), true)
   clearLegacyState()
-  assert.equal(memory.has(LEGACY_STORAGE_KEY), false)
-  assert.equal(memory.has(COMPACT_STORAGE_KEY), false)
-  assert.equal(memory.has(STORAGE_KEY), true)
-  assert.deepEqual(loadMigratedState(questions), migrated)
+  assert.equal(memory.has(OLD_STORAGE_KEY), false)
+  assert.equal(memory.has(COMPACT_ORDER_STORAGE_KEY), false)
+  assert.deepEqual(loadMigratedState(questions, selected).state, migrated.state)
 })
 
-test('automatic advance moves only from the same visible question and mode', () => {
-  const state = {
-    order: [1, 2], answers: { 1: 'B' }, favorites: [1, 2],
-    allIndex: 0, favoriteIndex: 0, mode: 'all',
-  }
-  assert.equal(advanceIfCurrent(state, { mode: 'all', questionId: 1 }).allIndex, 1)
-  assert.equal(advanceIfCurrent(state, { mode: 'all', questionId: 2 }), state)
-  assert.equal(advanceIfCurrent({ ...state, allIndex: 1 }, { mode: 'all', questionId: 1 }).allIndex, 1)
-  const favoritesState = { ...state, mode: 'favorites' }
-  assert.equal(advanceIfCurrent(favoritesState, { mode: 'all', questionId: 1 }), favoritesState)
-  assert.equal(advanceIfCurrent({ ...state, mode: 'favorites' }, { mode: 'favorites', questionId: 1 }).favoriteIndex, 1)
+test('v1 favorites carry over without resurrecting old answer history', () => {
+  const memory = storage()
+  memory.set(LEGACY_STORAGE_KEY, JSON.stringify({ answers: { 1: 'B' }, favorites: [2] }))
+  const { state } = loadMigratedState(questions, selected)
+  assert.deepEqual(state.answers, {})
+  assert.deepEqual(state.favorites, [2])
 })
 
-test('wrong answers are saved once to favorites while correct answers are not', () => {
-  const state = initialState(questions)
-  const wrong = recordAnswer(state, 1, 'A', 'B')
-  assert.deepEqual(wrong.favorites, [1])
-  assert.equal(wrong.answers[1], 'A')
-  assert.equal(recordAnswer(wrong, 1, 'A', 'B'), wrong)
-  const correct = recordAnswer(wrong, 2, 'A', 'A')
-  assert.deepEqual(correct.favorites, [1])
+test('migration keeps the full order cursor after removed questions', () => {
+  const memory = storage()
+  memory.set(FULL_ORDER_KEY, JSON.stringify({ order: ['full:999', 'full:2', 'full:1'], index: 2 }))
+  const { state } = loadMigratedState(questions, selected)
+  assert.deepEqual(state.full.order, [2, 1])
+  assert.equal(state.full.index, 1)
 })
